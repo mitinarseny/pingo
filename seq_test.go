@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func BenchmarkPendingSeqs(b *testing.B) {
+func BenchmarkSequences(b *testing.B) {
 	p := newSequences()
 	ctx := context.Background()
 	b.SetParallelism(100)

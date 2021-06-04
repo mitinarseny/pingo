@@ -16,10 +16,11 @@ import (
 var ipv4Loopback = net.IPv4(127, 0, 0, 1)
 
 func TestPinger(t *testing.T) {
-	p, err := New(ipv4Loopback, ipv4Loopback, nil)
+	p, err := New(&net.UDPAddr{IP: ipv4Loopback}, ipv4Loopback)
 	require.NoError(t, err)
 	defer p.Close()
-	require.NoError(t, p.SetTTL(1))
+	_, err = p.SetTTL(1)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -43,12 +44,12 @@ func TestPinger(t *testing.T) {
 }
 
 func BenchmarkPinger(b *testing.B) {
-	p, err := New(ipv4Loopback, nil, nil)
+	p, err := New(&net.UDPAddr{IP: ipv4Loopback}, ipv4Loopback)
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer p.Close()
-	if err := p.SetTTL(1); err != nil {
+	if _, err := p.SetTTL(1); err != nil {
 		b.Fatal(err)
 	}
 

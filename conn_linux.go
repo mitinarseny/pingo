@@ -9,12 +9,20 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
-func newConn(laddr, dst net.IP) (conn *net.UDPConn, proto int, err error) {
+// newConn returns a new udp connection with given local and destination addresses.
+// laddr should be a valid IP address, while dst could be nil.
+// Non-nil dst means that ICMP packets could be sent to and received from
+// only given address, pinging different address would result in error.
+// The returner proto is ICMP protocol number.
+func newConn(laddr *net.UDPAddr, dst net.IP) (conn *net.UDPConn, proto int, err error) {
 	if laddr == nil {
-		laddr = net.IPv4zero
+		laddr = new(net.UDPAddr)
+	}
+	if laddr.IP == nil {
+		laddr.IP = net.IPv4zero
 	}
 	var family int
-	if laddr.To4() != nil {
+	if laddr.IP.To4() != nil {
 		family, proto = syscall.AF_INET, ipv4.ICMPTypeEcho.Protocol()
 	} else {
 		family, proto = syscall.AF_INET6, ipv6.ICMPTypeEchoRequest.Protocol()
@@ -23,12 +31,13 @@ func newConn(laddr, dst net.IP) (conn *net.UDPConn, proto int, err error) {
 	if err != nil {
 		return nil, 0, os.NewSyscallError("socket", err)
 	}
+
 	if err := syscall.Bind(s, sockaddr(laddr)); err != nil {
 		syscall.Close(s)
 		return nil, 0, os.NewSyscallError("bind", err)
 	}
 	if dst != nil {
-		if err := syscall.Connect(s, sockaddr(dst)); err != nil {
+		if err := syscall.Connect(s, sockaddr(&net.UDPAddr{IP: dst})); err != nil {
 			syscall.Close(s)
 			return nil, 0, os.NewSyscallError("connect", err)
 		}
@@ -41,14 +50,18 @@ func newConn(laddr, dst net.IP) (conn *net.UDPConn, proto int, err error) {
 	return c.(*net.UDPConn), proto, cerr
 }
 
-func sockaddr(ip net.IP) syscall.Sockaddr {
-	if ip.To4() != nil {
-		ip = ip.To4()
-		var sa syscall.SockaddrInet4
-		copy(sa.Addr[:], ip)
+// sockaddr converts *net.UDPAddr to syscall.Sockaddr
+func sockaddr(addr *net.UDPAddr) syscall.Sockaddr {
+	if ip4 := addr.IP.To4(); ip4 != nil {
+		sa := syscall.SockaddrInet4{
+			Port: addr.Port,
+		}
+		copy(sa.Addr[:], ip4)
 		return &sa
 	}
-	var sa syscall.SockaddrInet6
-	copy(sa.Addr[:], ip)
+	sa := syscall.SockaddrInet6{
+		Port: addr.Port,
+	}
+	copy(sa.Addr[:], addr.IP.To16())
 	return &sa
 }
