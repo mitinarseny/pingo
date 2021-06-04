@@ -19,8 +19,12 @@ func TestPinger(t *testing.T) {
 	p, err := New(&net.UDPAddr{IP: ipv4Loopback}, ipv4Loopback)
 	require.NoError(t, err)
 	defer p.Close()
+
 	_, err = p.SetTTL(1)
 	require.NoError(t, err)
+	ttl, err := p.SetTTL(0)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, ttl)
 
 	ctx, cancel := context.WithCancel(context.Background())
 

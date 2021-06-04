@@ -66,15 +66,18 @@ func (s *sequences) add(ctx context.Context, dst net.IP, sentAt time.Time) (uint
 	}
 }
 
-// get returns pending request associated with given sequence number of nil
-// if there is no such pending request
+// get returns active pending request associated with given sequence number
+// It returns nil if there is no pending request for given sequence number
+// or its context has already been cancelled.
 func (s *sequences) get(seq uint16) *pending {
-	return s.pending[seq]
+	p := s.pending[seq]
+	if p == nil || p.ctx.Err() != nil {
+		return nil
+	}
+	return p
 }
 
-// free deletes the request from pending and deallocates given sequence number,
-// so it becomes available again and can be taken with add()
+// free deallocates given sequence number, making it available again with add()
 func (s *sequences) free(seq uint16) {
-	s.pending[seq] = nil
 	s.available <- seq
 }
