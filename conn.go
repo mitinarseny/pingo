@@ -101,3 +101,11 @@ func (p *Pinger) recvEcho(ctx context.Context, buff []byte, readTimeout time.Dur
 		return echo, from, nil
 	}
 }
+
+func (p *Pinger) recvSeq(ctx context.Context, buff []byte, readTimeout time.Duration) (seq uint16, from *net.IPAddr, err error) {
+	echo, from, err := p.recvEcho(ctx, buff, readTimeout)
+	if err != nil {
+		return 0, nil, err
+	}
+	return uint16(echo.Seq), from, nil
+}

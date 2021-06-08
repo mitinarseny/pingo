@@ -4,7 +4,9 @@ import (
 	"context"
 	"math"
 	"net"
+	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // pending holds information about the sent request
@@ -12,14 +14,11 @@ type pending struct {
 	// ctx is context of the sender
 	ctx context.Context
 
-	// ch is where to send the reply to
-	ch chan<- time.Duration
-
 	// dst is the destination, which the request was sent to
 	dst net.IP
 
-	// sentAt is the time when the request was sent
-	sentAt time.Time
+	// receivedAt is where to send the reply receive time to
+	receivedAt chan<- time.Time
 }
 
 // sequences manages sequence numbers and associated with them pendings
@@ -49,35 +48,32 @@ func newSequences() *sequences {
 // add adds pending request and returns allocated sequence number and the
 // channel, which the reply rtt is going to be sent to.
 // The caller should call free(seq) when the allocated sequence number is no
-// more needed
-func (s *sequences) add(ctx context.Context, dst net.IP, sentAt time.Time) (uint16, <-chan time.Duration, error) {
+// longer needed.
+func (s *sequences) add(ctx context.Context, dst net.IP) (uint16, <-chan time.Time, error) {
 	select {
 	case <-ctx.Done():
 		return 0, nil, ctx.Err()
 	case seq := <-s.available:
-		ch := make(chan time.Duration, 1)
-		s.pending[seq] = &pending{
-			ctx:    ctx,
-			ch:     ch,
-			dst:    dst,
-			sentAt: sentAt,
-		}
-		return seq, ch, nil
+		receivedAt := make(chan time.Time, 1)
+		atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&s.pending[seq])),
+			unsafe.Pointer(&pending{
+				ctx:        ctx,
+				receivedAt: receivedAt,
+				dst:        dst,
+			}))
+		return seq, receivedAt, nil
 	}
 }
 
 // get returns active pending request associated with given sequence number
-// It returns nil if there is no pending request for given sequence number
-// or its context has already been cancelled.
+// It returns nil if there is no pending request for given sequence number.
 func (s *sequences) get(seq uint16) *pending {
-	p := s.pending[seq]
-	if p == nil || p.ctx.Err() != nil {
-		return nil
-	}
-	return p
+	return (*pending)(atomic.LoadPointer(
+		(*unsafe.Pointer)(unsafe.Pointer(&s.pending[seq]))))
 }
 
 // free deallocates given sequence number, making it available again with add()
 func (s *sequences) free(seq uint16) {
+	atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&s.pending[seq])), nil)
 	s.available <- seq
 }

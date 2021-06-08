@@ -3,7 +3,6 @@ package ping
 import (
 	"context"
 	"testing"
-	"time"
 )
 
 func BenchmarkSequences(b *testing.B) {
@@ -12,7 +11,7 @@ func BenchmarkSequences(b *testing.B) {
 	b.SetParallelism(100)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			seq, _, err := p.add(ctx, nil, time.Time{})
+			seq, _, err := p.add(ctx, nil)
 			if err != nil {
 				b.Fatal(err)
 			}

@@ -71,18 +71,18 @@ func (p *Pinger) Close() error {
 func (p *Pinger) Listen(ctx context.Context, readTimeout time.Duration) error {
 	buff := make([]byte, 1500)
 	for {
-		echo, from, err := p.recvEcho(ctx, buff, readTimeout)
+		seq, from, err := p.recvSeq(ctx, buff, readTimeout)
 		if err != nil {
 			return err
 		}
 		receivedAt := time.Now()
-		pend := p.seqs.get(uint16(echo.Seq))
+		pend := p.seqs.get(seq)
 		if pend == nil || !from.IP.Equal(pend.dst) {
 			// Drop the reply in following cases:
-			//   * we did not send the echo request to which the reply came
+			//   * we did not send the echo request, which the reply came to
 			//   * sender gave up waiting for the reply
 			//   * the echo reply came from the address, which is different from
-			//     the destination address, to which the request was sent
+			//     the destination address, which the request was sent to
 			continue
 		}
 
@@ -91,9 +91,8 @@ func (p *Pinger) Listen(ctx context.Context, readTimeout time.Duration) error {
 			return ctx.Err()
 		case <-pend.ctx.Done():
 			// sender gave up waiting for the reply
-		case pend.ch <- receivedAt.Sub(pend.sentAt):
-			// close(pend.ch)
-			// TODO
+		case pend.receivedAt <- receivedAt:
+			close(pend.receivedAt)
 		}
 	}
 }
@@ -103,7 +102,7 @@ func (p *Pinger) Listen(ctx context.Context, readTimeout time.Duration) error {
 // it returns the round trip time. Otherwise, it returns an error occured while
 // sending on underlying socket or ctx.Err()
 func (p *Pinger) PingContext(ctx context.Context, dst net.IP) (rtt time.Duration, err error) {
-	seq, ch, err := p.seqs.add(ctx, dst, time.Now())
+	seq, ch, err := p.seqs.add(ctx, dst)
 	if err != nil {
 		return 0, err
 	}
@@ -112,12 +111,13 @@ func (p *Pinger) PingContext(ctx context.Context, dst net.IP) (rtt time.Duration
 	if err := p.send(dst, seq); err != nil {
 		return 0, err
 	}
+	sentAt := time.Now()
 
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
-	case rtt = <-ch:
-		return rtt, nil
+	case receivedAt := <-ch:
+		return receivedAt.Sub(sentAt), nil
 	}
 }
 
@@ -151,17 +151,19 @@ type Reply struct {
 
 // PingChContextIntervalTimeout sends ICMP Echo Requests periodically with
 // given interval (zero interval means send next packet righ after the reply
-// has been recieved) and waits for every reply until given context is done
-// or non-zero timeout is passed.
-// It returns a channel, which is closed when context is done, so the caller
+// to the previuos one has been recieved) and waits for every reply until
+// given context is done or non-zero timeout is passed.
+// It returns a channel, where replies are sent to. The channel is closed
+// when the context is done, so the caller should receive on that channel
+// until it is closed.
 func (p *Pinger) PingChContextIntervalTimeout(ctx context.Context, dst net.IP, interval, timeout time.Duration) <-chan Reply {
-	checkIntervalTimeout(interval, timeout)
 	ch := make(chan Reply)
 	go func() {
 		defer close(ch)
 
 		var ticker *time.Ticker
 		if interval > 0 {
+			checkIntervalTimeout(interval, timeout)
 			ticker = time.NewTicker(interval)
 			defer ticker.Stop()
 		}
@@ -176,13 +178,13 @@ func (p *Pinger) PingChContextIntervalTimeout(ctx context.Context, dst net.IP, i
 				Err: err,
 			}:
 			}
-			if ticker != nil {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					continue
-				}
+			if ticker == nil {
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
 			}
 		}
 	}()
@@ -226,45 +228,46 @@ func (p *Pinger) PingCh(dst net.IP) <-chan Reply {
 	return p.PingChContext(context.Background(), dst)
 }
 
-// PingNContextIntervalTimeout sends at most N ICMP Echo Requests with a given
+// PingNContextIntervalTimeout sends at most n ICMP Echo Requests with a given
 // interval (zero interval means send packets one by one and do not wait for
 // interval to pass) and returns average round trip time for successfully
 // received replies within the given per-reply timeout. Zero timeout means wait
 // for each reply ntil context is done.
-// The returned number of replies can differ from n if any errors encountered
-// while sending requests and receiving replies.
+// The returned number of successfully received replies can differ from n if
+// any errors encountered while sending requests and receiving replies.
 // The last non-nil error is returned.
-func (p *Pinger) PingNContextIntervalTimeout(ctx context.Context, dst net.IP, n int, intervall, timeout time.Duration) (avgRTT time.Duration, replies int, err error) {
-	checkIntervalTimeout(intervall, timeout)
-
+func (p *Pinger) PingNContextIntervalTimeout(ctx context.Context, dst net.IP, n int, interval, timeout time.Duration) (avgRTT time.Duration, success int, err error) {
 	var ticker *time.Ticker
-	if intervall > 0 {
-		ticker = time.NewTicker(intervall)
+	if interval > 0 {
+		checkIntervalTimeout(interval, timeout)
+		ticker = time.NewTicker(interval)
 		defer ticker.Stop()
 	}
+
 	for ; n > 0; n-- {
 		rtt, perr := p.PingContextTimeout(ctx, dst, timeout)
 		if perr == nil {
 			avgRTT += rtt
-			replies++
+			success++
 		} else {
 			err = perr
 		}
-		if ticker != nil {
-			select {
-			case <-ctx.Done():
-				if err == nil {
-					err = ctx.Err()
-				}
-				goto breakLoop
-			case <-ticker.C:
-				continue
+		if ticker == nil {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			if err == nil {
+				err = ctx.Err()
 			}
+			goto breakLoop
+		case <-ticker.C:
+			continue
 		}
 	}
 breakLoop:
-	if replies > 0 {
-		avgRTT /= time.Duration(replies)
+	if success > 0 {
+		avgRTT /= time.Duration(success)
 	}
 	return
 }
@@ -272,42 +275,42 @@ breakLoop:
 // PingNContextInterval is the same as PingNContextIntervalTimeout, but with
 // timeout equal to the interval, so it waits for reply to each request until
 // interval has passed.
-func (p *Pinger) PingNContextInterval(ctx context.Context, dst net.IP, n int, interval time.Duration) (avgRTT time.Duration, sent int, err error) {
+func (p *Pinger) PingNContextInterval(ctx context.Context, dst net.IP, n int, interval time.Duration) (avgRTT time.Duration, success int, err error) {
 	return p.PingNContextIntervalTimeout(ctx, dst, n, interval, interval)
 }
 
 // PingNContextTimeout is the same as PingNContextIntervalTimeout, but echo
 // requests are sent one by one, without waiting for interval to pass.
-func (p *Pinger) PingNContextTimeout(ctx context.Context, dst net.IP, n int, timeout time.Duration) (avgRTT time.Duration, sent int, err error) {
+func (p *Pinger) PingNContextTimeout(ctx context.Context, dst net.IP, n int, timeout time.Duration) (avgRTT time.Duration, success int, err error) {
 	return p.PingNContextIntervalTimeout(ctx, dst, n, 0, timeout)
 }
 
 // PingNContext is the same as PingNContextTimeout, but with no timeout,
 // so it waits for each reply until context is done.
-func (p *Pinger) PingNContext(ctx context.Context, dst net.IP, n int) (avgRTT time.Duration, sent int, err error) {
+func (p *Pinger) PingNContext(ctx context.Context, dst net.IP, n int) (avgRTT time.Duration, success int, err error) {
 	return p.PingNContextTimeout(ctx, dst, n, 0)
 }
 
 // PingNTimeout is the same as PingNTimeoutContext, but with background
 // context, so it tries to ping exactly n times.
-func (p *Pinger) PingNTimeout(dst net.IP, n int, timeout time.Duration) (avgRTT time.Duration, sent int, err error) {
+func (p *Pinger) PingNTimeout(dst net.IP, n int, timeout time.Duration) (avgRTT time.Duration, success int, err error) {
 	return p.PingNContextTimeout(context.Background(), dst, n, timeout)
 }
 
 // PingNInterval is the same as PingNTimeoutInterval, but with background
 // context, so it tries to ping exactly n times.
-func (p *Pinger) PingNInterval(dst net.IP, n int, interval time.Duration) (avgRTT time.Duration, sent int, err error) {
+func (p *Pinger) PingNInterval(dst net.IP, n int, interval time.Duration) (avgRTT time.Duration, success int, err error) {
 	return p.PingNContextInterval(context.Background(), dst, n, interval)
 }
 
 // PingN is the same as PingNContext, but with background context, so it tries
 // to ping exactly n times.
-func (p *Pinger) PingN(dst net.IP, n int) (avgRTT time.Duration, sent int, err error) {
+func (p *Pinger) PingN(dst net.IP, n int) (avgRTT time.Duration, success int, err error) {
 	return p.PingNContext(context.Background(), dst, n)
 }
 
 func checkIntervalTimeout(interval, timeout time.Duration) {
-	if interval > 0 && (timeout == 0 || timeout > interval) {
+	if timeout == 0 || timeout > interval {
 		panic("timeout should not be zero or greater than interval")
 	}
 }
