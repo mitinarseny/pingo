@@ -1,7 +1,6 @@
-# pingo
+# pingo [![Go Reference](https://pkg.go.dev/badge/github.com/mitinarseny/pingo.svg)](https://pkg.go.dev/github.com/mitinarseny/pingo)
 
-Golang library for 
-
+Golang ping library
 
 ## Features
 
