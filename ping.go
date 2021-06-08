@@ -12,6 +12,7 @@ type Pinger struct {
 	c    *net.UDPConn
 	seqs *sequences
 
+	// proto is IANA ICMP Protocol Number
 	proto int
 }
 
@@ -145,7 +146,12 @@ func (p *Pinger) PingTimeout(dst net.IP, timeout time.Duration) (rtt time.Durati
 }
 
 type Reply struct {
+	// RTT is a round trip time: the interval between sending
+	// an ICMP Echo Request and receiving ICMP Echo Reply.
 	RTT time.Duration
+
+	// Err is an error occurred while sending ICMP Echo Request
+	// or waiting for the reply
 	Err error
 }
 
