@@ -316,7 +316,7 @@ func (p *Pinger) PingN(dst net.IP, n int) (avgRTT time.Duration, success int, er
 }
 
 func checkIntervalTimeout(interval, timeout time.Duration) {
-	if timeout == 0 || timeout > interval {
-		panic("timeout should not be zero or greater than interval")
+	if !(0 < timeout && timeout <= interval) {
+		panic("timeout should be in range (0, interval]")
 	}
 }
