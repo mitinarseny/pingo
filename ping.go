@@ -22,7 +22,7 @@ type Pinger struct {
 // only given address, pinging different address would result in error.
 //
 // To enable receiving packets, Listen() should be called on returned Pinger.
-// Close() should be called after Listen() returns if Pinger is no more needed.
+// Close() should be called after Listen() returns.
 func New(laddr *net.UDPAddr, dst net.IP) (*Pinger, error) {
 	c, proto, err := newConn(laddr, dst)
 	if err != nil {
@@ -63,8 +63,8 @@ func (p *Pinger) Close() error {
 	return p.c.Close()
 }
 
-// Listen should be called to start receiving of incomming replies
-// and route them into calling Ping* method, so no Ping*() methods should be
+// Listen should be called to start receiving of incomming replies and route
+// them into calling Pinger.Ping* method, so no Pinger.Ping*() methods should be
 // called before Listen and after it returns.
 // It is a blocking call, so it should be run as a separate goroutine.
 // It returns a non-nil error if context is done or an error occured
