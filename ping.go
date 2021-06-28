@@ -37,7 +37,7 @@ func New(laddr *net.UDPAddr, dst net.IP) (*Pinger, error) {
 }
 
 // SetTTL with non-zero sets the given Time-to-Live on all outgoing IP packets.
-// Pass zero ttl To get current value.
+// Pass ttl 0 to get the current value.
 func (p *Pinger) SetTTL(ttl uint8) (uint8, error) {
 	c, err := p.c.SyscallConn()
 	if err != nil {
