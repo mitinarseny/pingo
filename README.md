@@ -20,7 +20,7 @@ Fast and lightweight ping library for Golang with multi-host support.
 You may need to adjust [`ping_group_range`](https://www.kernel.org/doc/Documentation/networking/ip-sysctl.txt)
 sysfs to allow the creation of ICMP sockets:
 ```sh
-$ echo 0 4294967295 > /proc/sys/net/ipv4/ping_group_range
+$ echo 0 2147483647 > /proc/sys/net/ipv4/ping_group_range
 ```
 
 ## Example
