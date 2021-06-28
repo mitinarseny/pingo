@@ -1,22 +1,27 @@
 # pingo [![Go Reference](https://pkg.go.dev/badge/github.com/mitinarseny/pingo.svg)](https://pkg.go.dev/github.com/mitinarseny/pingo)
 
-Golang ping library
+Fast and lightweight ping library for Golang with multi-host support.
 
 ## Features
 
-* ICMP sockets (TODO: link to linux kernel docs on ICMP sockets)
-  TODO: exmplain benefits: auto picking, no receive not ours packets and no collisions
-  TODO: /proc param
+* [ICMP sockets](https://lwn.net/Articles/420800):  
+  * UDP port 0 means "let the kernel pick a free number"
+  * ICMP Echo Message ID is UDP port, so multiple instances of Pinger do not collide
 * IPv4 and IPv6 support
-* TTL customization
-* No random at picking an ICMP sequence numbers
-  TODO: explain how they are managed and provide info about memory usage
-* [context](https://pkg.go.dev/context) awareness
+* [TTL customization](https://pkg.go.dev/github.com/mitinarseny/pingo#Pinger.SetTTL)
+* ICMP sequence numbers manager (no random): O(1) time, 256kB of memory
+* [Context](https://pkg.go.dev/context) awareness
 
 ## Requirements
 
-* Linux >= TODO
-* go >= 1.16 (TODO?)
+* go >= 1.16
+* Linux kernel >= 3.11
+
+You may need to adjust [`ping_group_range`](https://www.kernel.org/doc/Documentation/networking/ip-sysctl.txt)
+sysfs to allow the creation of ICMP sockets:
+```sh
+$ echo 0 4294967295 > /proc/sys/net/ipv4/ping_group_range
+```
 
 ## Example
 
@@ -24,7 +29,7 @@ Golang ping library
 p, err := New(&net.UDPAddr{IP: net.IPv4zero}, nil)
 if err != nil {
 	fmt.Println(err)
-return
+	return
 }
 
 ctx, cancel := context.WithCancel(context.Background())
