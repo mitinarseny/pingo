@@ -1,4 +1,4 @@
-# pingo [![Go Reference](https://pkg.go.dev/badge/github.com/mitinarseny/pingo.svg)](https://pkg.go.dev/github.com/mitinarseny/pingo)
+# pingo [![Go Reference](https://pkg.go.dev/badge/github.com/mitinarseny/pingo.svg)](https://pkg.go.dev/github.com/mitinarseny/pingo) [![Go](https://github.com/mitinarseny/pingo/actions/workflows/go.yml/badge.svg)](https://github.com/mitinarseny/pingo/actions/workflows/go.yml)
 
 Fast and lightweight ping library for Golang with multi-host support.
 
