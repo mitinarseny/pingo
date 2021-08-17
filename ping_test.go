@@ -49,6 +49,38 @@ func TestPinger(t *testing.T) {
 	require.Equal(t, context.Canceled, g.Wait())
 }
 
+func TestPingG(t *testing.T) {
+	p, err := New(&net.UDPAddr{IP: net.IPv4(0, 0, 0, 0)}, nil)
+	require.NoError(t, err)
+	defer p.Close()
+
+	_, err = p.SetTTL(1)
+	require.NoError(t, err)
+	ttl, err := p.SetTTL(0)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, ttl)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var g errgroup.Group
+	g.Go(func() error {
+		return p.Listen(ctx, 100*time.Millisecond)
+	})
+
+	t.Run("PingContext", func(t *testing.T) {
+		for i := 0; i < 100; i++ {
+			t.Run(strconv.Itoa(i), func(t *testing.T) {
+				t.Parallel()
+				rtt, err := p.PingContext(ctx, net.IPv4(8, 8, 8, 8))
+				require.NoError(t, err)
+				require.NotZero(t, rtt)
+			})
+		}
+	})
+	cancel()
+	require.Equal(t, context.Canceled, g.Wait())
+}
+
 func BenchmarkPinger(b *testing.B) {
 	p, err := New(&net.UDPAddr{IP: ipv4Loopback}, ipv4Loopback)
 	if err != nil {

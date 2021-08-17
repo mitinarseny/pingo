@@ -9,6 +9,12 @@ import (
 	"unsafe"
 )
 
+type reply struct {
+	receivedAt time.Time
+	payload    []byte
+	err error
+}
+
 // pending holds information about the sent request
 type pending struct {
 	// ctx is context of the sender
@@ -17,8 +23,8 @@ type pending struct {
 	// dst is the destination, which the request was sent to
 	dst net.IP
 
-	// receivedAt is where to send the reply receive time to
-	receivedAt chan<- time.Time
+	// reply is where to send the reply to
+	reply chan<- reply
 }
 
 // sequences manages sequence numbers and associated with them pendings
@@ -49,19 +55,19 @@ func newSequences() *sequences {
 // channel, which the reply rtt is going to be sent to.
 // The caller should call free(seq) when the allocated sequence number is no
 // longer needed.
-func (s *sequences) add(ctx context.Context, dst net.IP) (uint16, <-chan time.Time, error) {
+func (s *sequences) add(ctx context.Context, dst net.IP) (uint16, <-chan reply, error) {
 	select {
 	case <-ctx.Done():
 		return 0, nil, ctx.Err()
 	case seq := <-s.available:
-		receivedAt := make(chan time.Time, 1)
+		rep := make(chan reply, 1)
 		atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&s.pending[seq])),
 			unsafe.Pointer(&pending{
-				ctx:        ctx,
-				receivedAt: receivedAt,
-				dst:        dst,
+				ctx:   ctx,
+				reply: rep,
+				dst:   dst,
 			}))
-		return seq, receivedAt, nil
+		return seq, rep, nil
 	}
 }
 

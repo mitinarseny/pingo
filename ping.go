@@ -2,9 +2,8 @@ package ping
 
 import (
 	"context"
+	"fmt"
 	"net"
-	"os"
-	"syscall"
 	"time"
 )
 
@@ -36,27 +35,6 @@ func New(laddr *net.UDPAddr, dst net.IP) (*Pinger, error) {
 	}, nil
 }
 
-// SetTTL with non-zero sets the given Time-to-Live on all outgoing IP packets.
-// Pass ttl 0 to get the current value.
-func (p *Pinger) SetTTL(ttl uint8) (uint8, error) {
-	c, err := p.c.SyscallConn()
-	if err != nil {
-		return 0, err
-	}
-	c.Control(func(fd uintptr) {
-		if ttl == 0 {
-			var t int
-			t, err = syscall.GetsockoptInt(int(fd), syscall.SOL_IP, syscall.IP_TTL)
-			ttl = uint8(t)
-			err = os.NewSyscallError("getsockopt", err)
-		} else {
-			err = os.NewSyscallError("setsockopt",
-				syscall.SetsockoptByte(int(fd), syscall.SOL_IP, syscall.IP_TTL, ttl))
-		}
-	})
-	return ttl, err
-}
-
 // Close releases resources allocated for Pinger.
 // In particular, it closes the underlying socket.
 func (p *Pinger) Close() error {
@@ -70,15 +48,21 @@ func (p *Pinger) Close() error {
 // It returns a non-nil error if context is done or an error occured
 // while receiving on sokcet.
 func (p *Pinger) Listen(ctx context.Context, readTimeout time.Duration) error {
-	buff := make([]byte, 1500)
+	buff := make([]byte, 1500) // TODO: size
+	oob := make([]byte, 1500)  // TODO: size
 	for {
-		seq, from, err := p.recvSeq(ctx, buff, readTimeout)
-		if err != nil {
+		echo, wasTo, err := p.recvEcho(ctx, buff, oob, readTimeout)
+		fmt.Printf("recvEcho: echo: %#v, wasTo: %s, err: %s\n", echo, wasTo, err)
+		switch err.(type) {
+		case nil:
+		case DestinationUnreachableError:
+		case TimeExceeded:
+		default:
 			return err
 		}
 		receivedAt := time.Now()
-		pend := p.seqs.get(seq)
-		if pend == nil || !from.IP.Equal(pend.dst) {
+		pend := p.seqs.get(uint16(echo.Seq))
+		if pend == nil || !wasTo.IP.Equal(pend.dst) {
 			// Drop the reply in following cases:
 			//   * we did not send the echo request, which the reply came to
 			//   * sender gave up waiting for the reply
@@ -92,34 +76,43 @@ func (p *Pinger) Listen(ctx context.Context, readTimeout time.Duration) error {
 			return ctx.Err()
 		case <-pend.ctx.Done():
 			// sender gave up waiting for the reply
-		case pend.receivedAt <- receivedAt:
-			close(pend.receivedAt)
+		case pend.reply <- reply{
+			receivedAt: receivedAt,
+			payload:    echo.Data,
+			err:        err,
+		}:
+			close(pend.reply)
 		}
 	}
 }
 
-// PingContext sends one ICMP Echo Request to given destination and waits
-// for the ICMP Echo Reply until the given context is done. On success,
-// it returns the round trip time. Otherwise, it returns an error occured while
-// sending on underlying socket or ctx.Err()
-func (p *Pinger) PingContext(ctx context.Context, dst net.IP) (rtt time.Duration, err error) {
+// PingContextPayload sends one ICMP Echo Request to given destination with
+// given payload and waits for the reply until the given context is done.
+// On success, it returns the round trip time. Otherwise, it returns an error
+// occured while sending on underlying socket or ctx.Err()
+func (p *Pinger) PingContextPayload(ctx context.Context, dst net.IP, payload []byte) (rtt time.Duration, data []byte, err error) {
 	seq, ch, err := p.seqs.add(ctx, dst)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer p.seqs.free(seq)
 
-	if err := p.send(dst, seq); err != nil {
-		return 0, err
+	if err := p.send(dst, seq, payload); err != nil {
+		return 0, nil, err
 	}
 	sentAt := time.Now()
 
 	select {
 	case <-ctx.Done():
-		return 0, ctx.Err()
-	case receivedAt := <-ch:
-		return receivedAt.Sub(sentAt), nil
+		return 0, nil, ctx.Err()
+	case rep := <-ch:
+		return rep.receivedAt.Sub(sentAt), rep.payload, rep.err
 	}
+}
+
+func (p *Pinger) PingContext(ctx context.Context, dst net.IP) (rtt time.Duration, err error) {
+	rtt, _, err = p.PingContextPayload(ctx, dst, nil)
+	return rtt, err
 }
 
 // Ping is like PingContext, but with background context.
@@ -149,6 +142,9 @@ type Reply struct {
 	// RTT is a round trip time: the interval between sending
 	// an ICMP Echo Request and receiving ICMP Echo Reply.
 	RTT time.Duration
+
+	// Data is a reply payload
+	Data []byte
 
 	// Err is an error occurred while sending ICMP Echo Request
 	// or waiting for the reply
