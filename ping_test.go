@@ -22,9 +22,8 @@ func TestPinger(t *testing.T) {
 	require.NoError(t, err)
 	defer p.Close()
 
-	_, err = p.SetTTL(1)
-	require.NoError(t, err)
-	ttl, err := p.SetTTL(0)
+	require.NoError(t, p.SetTTL(1))
+	ttl, err := p.TTL()
 	require.NoError(t, err)
 	require.EqualValues(t, 1, ttl)
 
@@ -32,7 +31,8 @@ func TestPinger(t *testing.T) {
 
 	var g errgroup.Group
 	g.Go(func() error {
-		return p.Listen(ctx, 100*time.Millisecond)
+		// TODO: msgBuffSize
+		return p.Listen(ctx, 10)
 	})
 
 	t.Run("PingContext", func(t *testing.T) {
@@ -49,52 +49,21 @@ func TestPinger(t *testing.T) {
 	require.Equal(t, context.Canceled, g.Wait())
 }
 
-func TestPingG(t *testing.T) {
-	p, err := New(&net.UDPAddr{IP: net.IPv4(0, 0, 0, 0)}, nil)
-	require.NoError(t, err)
-	defer p.Close()
-
-	_, err = p.SetTTL(1)
-	require.NoError(t, err)
-	ttl, err := p.SetTTL(0)
-	require.NoError(t, err)
-	require.EqualValues(t, 1, ttl)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	var g errgroup.Group
-	g.Go(func() error {
-		return p.Listen(ctx, 100*time.Millisecond)
-	})
-
-	t.Run("PingContext", func(t *testing.T) {
-		for i := 0; i < 100; i++ {
-			t.Run(strconv.Itoa(i), func(t *testing.T) {
-				t.Parallel()
-				rtt, err := p.PingContext(ctx, net.IPv4(8, 8, 8, 8))
-				require.NoError(t, err)
-				require.NotZero(t, rtt)
-			})
-		}
-	})
-	cancel()
-	require.Equal(t, context.Canceled, g.Wait())
-}
-
 func BenchmarkPinger(b *testing.B) {
 	p, err := New(&net.UDPAddr{IP: ipv4Loopback}, ipv4Loopback)
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer p.Close()
-	if _, err := p.SetTTL(1); err != nil {
+	if err := p.SetTTL(1); err != nil {
 		b.Fatal(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go p.Listen(ctx, 100*time.Millisecond)
+	// TODO: msgBuffSize
+	go p.Listen(ctx, 10)
 
 	var sumRTT time.Duration
 
@@ -125,7 +94,8 @@ func ExamplePinger_PingContextTimeout() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var g errgroup.Group
 	g.Go(func() error {
-		return p.Listen(ctx, 100*time.Millisecond)
+		// TODO: msgBuffSize
+		return p.Listen(ctx, 10)
 	})
 
 	defer func() {

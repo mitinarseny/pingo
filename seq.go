@@ -12,7 +12,7 @@ import (
 type reply struct {
 	receivedAt time.Time
 	payload    []byte
-	err error
+	err        error
 }
 
 // pending holds information about the sent request

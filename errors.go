@@ -36,7 +36,7 @@ func (c DstUnreachableCode) Error() string {
 }
 
 type DestinationUnreachableError struct {
-	From *net.IPAddr
+	From net.IP
 	Code DstUnreachableCode
 }
 
@@ -49,7 +49,7 @@ func (e DestinationUnreachableError) Unwrap() error {
 }
 
 type TimeExceeded struct {
-	From *net.IPAddr
+	From net.IP
 }
 
 func (e TimeExceeded) Error() string {
