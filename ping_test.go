@@ -27,24 +27,31 @@ func TestPinger(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, ttl)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
 	var g errgroup.Group
 	g.Go(func() error {
-		// TODO: msgBuffSize
-		return p.Listen(ctx, 10)
+		return p.Listen(ctx, 100, 20)
 	})
 
+	// wait for listen to start
+	time.Sleep(2 * time.Second)
+
 	t.Run("PingContext", func(t *testing.T) {
-		for i := 0; i < 100; i++ {
-			t.Run(strconv.Itoa(i), func(t *testing.T) {
+		for i := uint16(0); i < 100; i++ {
+			i := i
+			t.Run(strconv.FormatUint(uint64(i), 10), func(t *testing.T) {
 				t.Parallel()
-				rtt, err := p.PingContext(ctx, ipv4Loopback)
+				// payload := make([]byte, 20)
+				// binary.LittleEndian.PutUint16(payload, i)
+				rtt, _, err := p.PingContextPayload(ctx, ipv4Loopback, nil)
 				require.NoError(t, err)
 				require.NotZero(t, rtt)
+				// require.Equal(t, payload, got)
 			})
 		}
 	})
+	t.Log("all exited")
 	cancel()
 	require.Equal(t, context.Canceled, g.Wait())
 }
@@ -63,7 +70,7 @@ func BenchmarkPinger(b *testing.B) {
 	defer cancel()
 
 	// TODO: msgBuffSize
-	go p.Listen(ctx, 10)
+	go p.Listen(ctx, 10, 0)
 
 	var sumRTT time.Duration
 
@@ -95,7 +102,7 @@ func ExamplePinger_PingContextTimeout() {
 	var g errgroup.Group
 	g.Go(func() error {
 		// TODO: msgBuffSize
-		return p.Listen(ctx, 10)
+		return p.Listen(ctx, 10, 0)
 	})
 
 	defer func() {

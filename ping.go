@@ -2,16 +2,20 @@ package ping
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+	"golang.org/x/sys/unix"
 )
 
 type Pinger struct {
+	c  net.PacketConn
 	c4 *ipv4.PacketConn
 	c6 *ipv6.PacketConn
 
@@ -28,15 +32,56 @@ type Pinger struct {
 // To enable receiving packets, Listen() should be called on returned Pinger.
 // Close() should be called after Listen() returns.
 func New(laddr *net.UDPAddr, dst net.IP) (*Pinger, error) {
-	c, proto, err := newConn(laddr, dst)
+	if laddr == nil {
+		laddr = new(net.UDPAddr)
+	}
+	if laddr.IP == nil {
+		laddr.IP = net.IPv4zero
+	}
+	var family, proto int
+	if laddr.IP.To4() != nil {
+		family, proto = unix.AF_INET, unix.IPPROTO_ICMP
+	} else {
+		family, proto = unix.AF_INET6, unix.IPPROTO_ICMPV6
+	}
+	c, err := newConn(family, proto, laddr, dst)
 	if err != nil {
 		return nil, err
 	}
-	// TODO: set icmp filter
 
+	var (
+		c4 *ipv4.PacketConn
+		c6 *ipv6.PacketConn
+	)
+	switch family {
+	case unix.AF_INET:
+		c4 = ipv4.NewPacketConn(c)
+		var f ipv4.ICMPFilter
+		f.SetAll(true)
+		f.Accept(ipv4.ICMPTypeEchoReply)
+		f.Accept(ipv4.ICMPTypeDestinationUnreachable)
+		f.Accept(ipv4.ICMPTypeTimeExceeded)
+		// _ = c4.SetICMPFilter(&f)
+	case unix.AF_INET6:
+		c6 = ipv6.NewPacketConn(c)
+		var f ipv6.ICMPFilter
+		f.SetAll(true)
+		f.Accept(ipv6.ICMPTypeEchoReply)
+		f.Accept(ipv6.ICMPTypeDestinationUnreachable)
+		f.Accept(ipv6.ICMPTypeTimeExceeded)
+		// _ = c6.SetICMPFilter(&f)
+	}
+
+	// lock for reading until Listen is called
+	if err := c.SetReadDeadline(time.Now()); err != nil {
+		c.Close()
+		return nil, err
+	}
+	// TODO: set icmp filter
 	return &Pinger{
-		c4:    ipv4.NewPacketConn(c),
-		c6:    ipv6.NewPacketConn(c),
+		c:     c,
+		c4:    c4,
+		c6:    c6,
 		seqs:  newSequences(),
 		proto: proto,
 	}, nil
@@ -45,10 +90,7 @@ func New(laddr *net.UDPAddr, dst net.IP) (*Pinger, error) {
 // Close releases resources allocated for Pinger.
 // In particular, it closes the underlying socket.
 func (p *Pinger) Close() error {
-	if p.c4 != nil {
-		return p.c4.Close()
-	}
-	return p.c6.Close()
+	return p.c.Close()
 }
 
 // Listen handles receiving of incomming replies and routes them into calling
@@ -60,57 +102,92 @@ func (p *Pinger) Close() error {
 // NOTE: It is a blocking call, so it should be run as a separate goroutine.
 // It returns a non-nil error if context is done or an error occured
 // while receiving on sokcet.
-func (p *Pinger) Listen(ctx context.Context, msgBuffSize int) error {
+func (p *Pinger) Listen(ctx context.Context, msgBuffSize, maxPayloadSize int) error {
 	if msgBuffSize == 0 {
 		panic("zero buffer size")
 	}
-	if p.c4 != nil {
-		return p.listen4(ctx, msgBuffSize)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// unlock for reading
+	if err := p.c.SetReadDeadline(time.Time{}); err != nil {
+		return err
 	}
-	return p.listen6(ctx, msgBuffSize)
+	go func() {
+		<-ctx.Done()
+		// lock for reading and make all pending reads return an error
+		_ = p.c.SetReadDeadline(time.Now())
+	}()
+
+	ch := make(chan socketMessage, 100)
+	defer close(ch)
+	chts := make(chan tsts, 10)
+	defer close(chts)
+	for i := 0; i < 4; i++ {
+		// go p.txTsDispatcher(chts)
+		go p.dispatcher(ch)
+	}
+
+	buffSize := sizeOfICMPEchoHeader + int(maxPayloadSize)
+	var err error
+	switch p.proto {
+	case unix.IPPROTO_ICMP:
+		err = p.read4(ch, msgBuffSize, buffSize)
+	case unix.IPPROTO_ICMPV6:
+		err = p.read6(ch, msgBuffSize, buffSize)
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		err = ctx.Err()
+	}
+	return err
 }
+
+const (
+	sizeOfICMPHeader     = 4                    // type, code and checksum
+	sizeOfICMPEchoHeader = sizeOfICMPHeader + 4 // ID and seq are both uint16
+)
 
 // PingContextPayload sends one ICMP Echo Request to given destination with
 // given payload and waits for the reply until the given context is done.
 // On success, it returns the round trip time. Otherwise, it returns an error
 // occured while sending on underlying socket or ctx.Err()
-func (p *Pinger) PingContextPayload(ctx context.Context, dst net.IP, payload []byte) (rtt time.Duration, data []byte, err error) {
+func (p *Pinger) PingContextPayload(ctx context.Context, dst net.IP, payload []byte) (Reply, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	seq, ch, err := p.seqs.add(ctx, dst)
 	if err != nil {
-		return 0, nil, err
+		return Reply{}, err
 	}
 	defer p.seqs.free(seq)
 
 	if err := p.sendSeq(seq, dst, payload); err != nil {
-		return 0, nil, err
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			err = fmt.Errorf("Listen has returned or was not started yet: %w", err)
+		}
+		return Reply{}, err
 	}
-	sentAt := time.Now()
 
 	select {
 	case <-ctx.Done():
-		return 0, nil, ctx.Err()
+		return Reply{}, ctx.Err()
 	case rep := <-ch:
-		return rep.receivedAt.Sub(sentAt), rep.payload, rep.err
+		return rep, nil
 	}
 }
 
 // PingContext is like PingContextPayload, but with no payload.
-func (p *Pinger) PingContext(ctx context.Context, dst net.IP) (rtt time.Duration, err error) {
-	rtt, _, err = p.PingContextPayload(ctx, dst, nil)
-	return rtt, err
+func (p *Pinger) PingContext(ctx context.Context, dst net.IP) (Reply, error) {
+	return p.PingContextPayload(ctx, dst, nil)
 }
 
 // PingPayload is like PingContextPayload, but with background context.
-func (p *Pinger) PingPayload(dst net.IP, payload []byte) (rtt time.Duration, err error) {
-	rtt, _, err = p.PingContextPayload(context.Background(), dst, payload)
-	return rtt, err
+func (p *Pinger) PingPayload(dst net.IP, payload []byte) (Reply, error) {
+	return p.PingContextPayload(context.Background(), dst, payload)
 }
 
 // Ping is like PingContext, but with background context.
-func (p *Pinger) Ping(dst net.IP) (rtt time.Duration, err error) {
+func (p *Pinger) Ping(dst net.IP) (Reply, error) {
 	return p.PingContext(context.Background(), dst)
 }
 
@@ -119,7 +196,7 @@ func (p *Pinger) Ping(dst net.IP) (rtt time.Duration, err error) {
 // Zero timeout means no timeout, so PingContextTimeout(ctx, dst, 0) is
 // equialent to PingContext(ctx, dst)
 func (p *Pinger) PingContextPayloadTimeout(ctx context.Context, dst net.IP,
-	payload []byte, timeout time.Duration) (rtt time.Duration, data []byte, err error) {
+	payload []byte, timeout time.Duration) (Reply, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -129,20 +206,18 @@ func (p *Pinger) PingContextPayloadTimeout(ctx context.Context, dst net.IP,
 }
 
 // PingContextTimeout is like PingContextPayloadTimeout, but with no payload.
-func (p *Pinger) PingContextTimeout(ctx context.Context, dst net.IP, timeout time.Duration) (rtt time.Duration, err error) {
-	rtt, _, err = p.PingContextPayloadTimeout(ctx, dst, nil, timeout)
-	return rtt, err
+func (p *Pinger) PingContextTimeout(ctx context.Context, dst net.IP, timeout time.Duration) (Reply, error) {
+	return p.PingContextPayloadTimeout(ctx, dst, nil, timeout)
 }
 
 // PingPayloadTimeout is like PingContextPayloadTimeout, but with background context.
 func (p *Pinger) PingPayloadTimeout(dst net.IP, payload []byte,
-	timeout time.Duration) (rtt time.Duration, err error) {
-	rtt, _, err = p.PingContextPayloadTimeout(context.Background(), dst, nil, timeout)
-	return rtt, err
+	timeout time.Duration) (Reply, error) {
+	return p.PingContextPayloadTimeout(context.Background(), dst, nil, timeout)
 }
 
 // PingTimeout is like PingPayloadTimeout, but no payload.
-func (p *Pinger) PingTimeout(dst net.IP, timeout time.Duration) (rtt time.Duration, err error) {
+func (p *Pinger) PingTimeout(dst net.IP, timeout time.Duration) (Reply, error) {
 	return p.PingPayloadTimeout(dst, nil, timeout)
 }
 
@@ -181,17 +256,15 @@ func (p *Pinger) PingChContextPayloadIntervalTimeout(ctx context.Context, payloa
 		}
 
 		for {
-			rtt, data, err := p.PingContextPayloadTimeout(ctx, dst, payload, timeout)
+			r, err := p.PingContextPayloadTimeout(ctx, dst, payload, timeout)
 			select {
 			case <-ctx.Done():
 				return
-			case ch <- Reply{
-				RTT:  rtt,
-				Data: data,
-				Err:  err,
-			}:
+			case ch <- r:
 			}
-			// TODO: switch err: if non-ICMP related err -> return
+			if !(errors.Is(err, ctx.Err())) {
+				return
+			}
 			if ticker == nil {
 				continue
 			}
@@ -303,12 +376,12 @@ func (p *Pinger) PingNContextPayloadIntervalTimeout(ctx context.Context, dst net
 	}
 
 	for ; n > 0; n-- {
-		rtt, _, perr := p.PingContextPayloadTimeout(ctx, dst, payload, timeout)
-		if perr == nil {
-			avgRTT += rtt
+		r, err := p.PingContextPayloadTimeout(ctx, dst, payload, timeout)
+		if err == nil {
+			avgRTT += r.RTT
 			success++
-		} else {
-			err = perr
+		}
+		if errors.Is(err, ctx.Err()) {
 			// TODO: switch err: if non-ICMP related err -> return
 		}
 		if ticker == nil {

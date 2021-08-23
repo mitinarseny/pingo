@@ -5,6 +5,13 @@ import (
 	"net"
 )
 
+var icmpError ICMPError
+
+type ICMPError interface {
+	error
+	From() net.IP
+}
+
 type DstUnreachableCode uint8
 
 const (
@@ -36,22 +43,39 @@ func (c DstUnreachableCode) Error() string {
 }
 
 type DestinationUnreachableError struct {
-	From net.IP
-	Code DstUnreachableCode
+	from net.IP
+	code DstUnreachableCode
+}
+
+func NewDestinationUnreachableError(from net.IP, code DstUnreachableCode) error {
+	return DestinationUnreachableError{
+		from: from,
+		code: code,
+	}
 }
 
 func (e DestinationUnreachableError) Error() string {
-	return fmt.Sprintf("from %s: %s", e.From, e.Code.Error())
+	return fmt.Sprintf("from %s: %s", e.From(), e.code.Error())
+}
+
+func (e DestinationUnreachableError) From() net.IP {
+	return e.from
 }
 
 func (e DestinationUnreachableError) Unwrap() error {
-	return e.Code
+	return e.code
 }
 
-type TimeExceeded struct {
-	From net.IP
+type TimeExceededError net.IP
+
+func NewTimeExceededError(from net.IP) error {
+	return TimeExceededError(from)
 }
 
-func (e TimeExceeded) Error() string {
-	return fmt.Sprintf("from %s: TTL exceeded in transit", e.From)
+func (e TimeExceededError) Error() string {
+	return fmt.Sprintf("from %s: TTL exceeded in transit", e.From())
+}
+
+func (e TimeExceededError) From() net.IP {
+	return net.IP(e)
 }
