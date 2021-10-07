@@ -2,6 +2,7 @@ package ping
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"net"
 	"sync/atomic"
@@ -17,8 +18,7 @@ type pending struct {
 	// dst is the destination, which the request was sent to
 	dst net.IP
 
-	// TODO: doc
-	sentAt chan time.Time
+	sentAt time.Time
 
 	// reply is where to send the reply to
 	reply chan<- Reply
@@ -48,6 +48,8 @@ func newSequences() *sequences {
 	}
 }
 
+// TODO: sequences.Close()?
+
 // add adds pending request and returns allocated sequence number and the
 // channel, which the reply rtt is going to be sent to.
 // The caller should call free(seq) when the allocated sequence number is no
@@ -62,11 +64,12 @@ func (s *sequences) add(ctx context.Context, dst net.IP) (uint16, <-chan Reply, 
 			nil, unsafe.Pointer(&pending{
 				ctx:    ctx,
 				dst:    dst,
-				sentAt: make(chan time.Time, 1),
+				// TODO: recv transmit timestamps from socket error queue
+				// https://github.com/golang/go/issues/47926
+				sentAt: time.Now(),
 				reply:  rep,
 			})) {
-			// TODO: should not happen
-			panic("seq is busy")
+			panic(fmt.Errorf("seq %d is busy", seq))
 		}
 		return seq, rep, nil
 	}

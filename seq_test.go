@@ -15,7 +15,9 @@ func BenchmarkSequences(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			p.get(seq)
+			if p.get(seq) == nil {
+				b.Fatal("nil pend")
+			}
 			p.free(seq)
 		}
 	})

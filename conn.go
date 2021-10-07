@@ -1,8 +1,8 @@
 package ping
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"time"
 	"unsafe"
 
@@ -12,7 +12,6 @@ import (
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
 
@@ -22,38 +21,24 @@ import (
 // only given address, pinging different address would result in error.
 // The returner proto is ICMP protocol number.
 
-func newConn(family, proto int, laddr *net.UDPAddr, dst net.IP) (net.PacketConn, error) {
+func newConn(family, proto int, laddr *net.UDPAddr, dst net.IP) (conn net.PacketConn, err error) {
 	s, err := unix.Socket(family, unix.SOCK_DGRAM|unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC, proto)
 	if err != nil {
 		return nil, os.NewSyscallError("socket", err)
 	}
-	if err := unix.SetsockoptInt(s, unix.IPPROTO_IP, unix.IP_RECVERR, 1); err != nil {
-		unix.Close(s)
-		return nil, os.NewSyscallError("setsockopt", err)
-	}
-	// TODO: this may be not supported
-	if err := unix.SetsockoptInt(s, unix.SOL_SOCKET, unix.SO_TIMESTAMPNS, 1); err != nil {
-		unix.Close(s)
-		return nil, os.NewSyscallError("setsockopt", err)
-	}
-	// TODO: unix.SOF_TIMESTAMPING_OPT_TSONLY
-	if err := unix.SetsockoptInt(s, unix.SOL_SOCKET, unix.SO_TIMESTAMPING,
-		unix.SOF_TIMESTAMPING_RX_SOFTWARE|unix.SOF_TIMESTAMPING_TX_SOFTWARE|
-			unix.SOF_TIMESTAMPING_OPT_CMSG|unix.SOF_TIMESTAMPING_OPT_ID|
-			unix.SOF_TIMESTAMPING_TX_SCHED|unix.SOF_TIMESTAMPING_SOFTWARE); err != nil {
-		unix.Close(s)
-		return nil, os.NewSyscallError("setsockopt", err)
-	}
+
 	if err := unix.Bind(s, sockaddr(laddr)); err != nil {
 		unix.Close(s)
 		return nil, os.NewSyscallError("bind", err)
 	}
+
 	if dst != nil {
 		if err := unix.Connect(s, sockaddr(&net.UDPAddr{IP: dst})); err != nil {
 			unix.Close(s)
 			return nil, os.NewSyscallError("connect", err)
 		}
 	}
+
 	f := os.NewFile(uintptr(s), "datagram-oriented icmp")
 	c, err := net.FilePacketConn(f)
 	if cerr := f.Close(); cerr != nil {
@@ -62,88 +47,101 @@ func newConn(family, proto int, laddr *net.UDPAddr, dst net.IP) (net.PacketConn,
 	return c, err
 }
 
-// TTL returns current TTL set for outgoing packages
-func (p *Pinger) TTL() (uint8, error) {
-	var (
-		ttl int
-		err error
-	)
-	switch p.proto {
-	case unix.IPPROTO_ICMP:
-		ttl, err = p.c4.TTL()
-	case unix.IPPROTO_ICMPV6:
-		ttl, err = p.c6.HopLimit()
-	}
-	return uint8(ttl), err
-}
-
-// SetTTL with non-zero sets the given Time-to-Live on all outgoing IP packets.
-// Pass ttl 0 to get the current value.
-func (p *Pinger) SetTTL(ttl uint8) error {
-	if p.proto == unix.IPPROTO_ICMP {
-		return p.c4.SetTTL(int(ttl))
-	}
-	return p.c6.SetHopLimit(int(ttl))
-}
-
-// send sends buffer to given destination
-func (p *Pinger) send(b []byte, dst net.IP) (err error) {
+// send sends buffer to given destination with given options
+func (p *Pinger) send(b []byte, dst net.IP, opts ...SetOption) (err error) {
 	dstAddr := net.UDPAddr{IP: dst}
+	oob := marshalOpts(opts...)
 	switch p.proto {
 	case unix.IPPROTO_ICMP:
-		_, err = p.c4.WriteTo(b, nil, &dstAddr)
+		_, err = p.c4.WriteBatch([]ipv4.Message{{
+			Buffers: [][]byte{b},
+			OOB:     oob,
+			Addr:    &dstAddr,
+		}}, 0)
 	case unix.IPPROTO_ICMPV6:
-		_, err = p.c6.WriteTo(b, nil, &dstAddr)
+		_, err = p.c6.WriteBatch([]ipv6.Message{{
+			Buffers: [][]byte{b},
+			OOB:     oob,
+			Addr:    &dstAddr,
+		}}, 0)
 	}
 	return err
 }
 
-func (p *Pinger) read4ErrQueue(ch chan<- socketMessage) error {
-	ms := make([]ipv4.Message, 10)
-	for i := range ms {
-		ms[i].Buffers = [][]byte{make([]byte, 1500)}
-		ms[i].OOB = make([]byte, 1500)
+const (
+	sizeOfICMPHeader     = 4                    // type, code and checksum
+	sizeOfICMPEchoHeader = sizeOfICMPHeader + 4 // ID and seq are both uint16
+	a                    = unsafe.Sizeof(unix.Timespec{})
+)
+
+var oobSize = unix.CmsgSpace(int(unsafe.Sizeof(unix.Timespec{}))) + // SO_TIMESTAMPNS_NEW
+	// IP(V6)_RECVERR
+	unix.CmsgSpace(int(
+		unsafe.Sizeof(unix.SockExtendedErr{})+
+			unsafe.Sizeof(unix.RawSockaddrAny{}))) +
+	unix.CmsgSpace(int(unsafe.Sizeof(int32(0)))) // IP_RECVTTL / IPV6_RECVHOPLIMIT
+
+// Listen handles receiving of incomming replies and routes them into calling
+// Pinger.Ping* method, so *no* Pinger.Ping*() methods should be called before
+// Listen and after it returns.
+//
+// msgBuffSize is a size of buffer for socket messages for receiving incoming packets.
+// maxPayloadSize is a maximum size of ICMP payload to receive.
+//
+// NOTE: It is a blocking call, so it should be run as a separate goroutine.
+// It returns a non-nil error if context is done or an error occured
+// while receiving on sokcet.
+func (p *Pinger) Listen(ctx context.Context, msgBuffSize, maxPayloadSize int) error {
+	if msgBuffSize == 0 {
+		panic("zero buffer size")
 	}
-	for {
-		fmt.Println("read errq")
-		n, err := p.c4.ReadBatch(ms, unix.MSG_ERRQUEUE|unix.MSG_DONTWAIT)
-		fmt.Printf("read errq err: %s", err)
-		if err != nil {
-			return err
-		}
-		for _, m := range ms[:n] {
-			ch <- socketMessage{
-				addr: m.Addr,
-				buff: m.Buffers[0][:m.N],
-				oob:  m.OOB[:m.NN],
-			}
-		}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// unlock for reading
+	if err := p.c.SetReadDeadline(time.Time{}); err != nil {
+		return err
 	}
+	go func() {
+		<-ctx.Done()
+		// lock for reading and make all pending reads return an error
+		_ = p.c.SetReadDeadline(time.Now())
+	}()
+
+	ch := make(chan sockMsg, 100)
+	defer close(ch)
+
+	go p.dispatcher(ch)
+
+	buffSize := sizeOfICMPEchoHeader + int(maxPayloadSize)
+	var err error
+	switch p.proto {
+	case unix.IPPROTO_ICMP:
+		err = p.read4(ch, msgBuffSize, buffSize)
+	case unix.IPPROTO_ICMPV6:
+		err = p.read6(ch, msgBuffSize, buffSize)
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		err = ctx.Err()
+	}
+	return err
 }
 
-func (p *Pinger) read4(ch chan<- socketMessage, msgBuffSize, buffSize int) error {
-	var g errgroup.Group
-	// g.Go(func() error {
-	// 	return p.read4N(ch, msgBuffSize, buffSize)
-	// })
-	g.Go(func() error {
-		return p.read4ErrQueue(ch)
-	})
-	return g.Wait()
+type sockMsg struct {
+	addr      net.Addr
+	buff, oob []byte
 }
 
-func (p *Pinger) read4N(ch chan<- socketMessage, msgBuffSize, buffSize int) error {
+func (p *Pinger) read4(ch chan<- sockMsg, msgBuffSize, buffSize int) error {
 	ms := make([]ipv4.Message, msgBuffSize)
 	for i := range ms {
 		// make only one buffer since we either way will parse ICMP
 		ms[i].Buffers = [][]byte{make([]byte, buffSize)}
 		// TODO: sum of sizes of all controll messages
-		ms[i].OOB = make([]byte, 1500)
+		ms[i].OOB = make([]byte, oobSize)
 	}
 	for {
 		n, err := p.c4.ReadBatch(ms, 0)
-		// TODO ENOMSG?
-		fmt.Printf("readbatch err: %s\n", err)
 		if errors.Is(err, unix.EHOSTUNREACH) {
 			// there should be at least one ICMP error
 			n, err = p.c4.ReadBatch(ms, unix.MSG_ERRQUEUE|unix.MSG_WAITFORONE)
@@ -152,7 +150,7 @@ func (p *Pinger) read4N(ch chan<- socketMessage, msgBuffSize, buffSize int) erro
 			return err
 		}
 		for _, m := range ms[:n] {
-			ch <- socketMessage{
+			ch <- sockMsg{
 				addr: m.Addr,
 				buff: m.Buffers[0][:m.N],
 				oob:  m.OOB[:m.NN],
@@ -161,16 +159,16 @@ func (p *Pinger) read4N(ch chan<- socketMessage, msgBuffSize, buffSize int) erro
 	}
 }
 
-func (p *Pinger) read6(ch chan<- socketMessage, msgBuffSize, buffSize int) error {
+func (p *Pinger) read6(ch chan<- sockMsg, msgBuffSize, buffSize int) error {
 	ms := make([]ipv6.Message, msgBuffSize)
 	for i := range ms {
 		// make only one buffer since we either way will parse ICMP
 		ms[i].Buffers = [][]byte{make([]byte, buffSize)}
 		// TODO: sum of sizes of all possible control messages
-		ms[i].OOB = make([]byte, 1500)
+		ms[i].OOB = make([]byte, oobSize)
 	}
 	for {
-		n, err := p.c6.ReadBatch(ms, unix.MSG_DONTWAIT)
+		n, err := p.c6.ReadBatch(ms, 0)
 		if errors.Is(err, unix.EHOSTUNREACH) {
 			// there should be at least one ICMP error
 			n, err = p.c6.ReadBatch(ms, unix.MSG_ERRQUEUE|unix.MSG_WAITFORONE)
@@ -179,7 +177,7 @@ func (p *Pinger) read6(ch chan<- socketMessage, msgBuffSize, buffSize int) error
 			return err
 		}
 		for _, m := range ms[:n] {
-			ch <- socketMessage{
+			ch <- sockMsg{
 				addr: m.Addr,
 				buff: m.Buffers[0][:m.N],
 				oob:  m.OOB[:m.NN],
@@ -188,23 +186,7 @@ func (p *Pinger) read6(ch chan<- socketMessage, msgBuffSize, buffSize int) error
 	}
 }
 
-type socketMessage struct {
-	addr      net.Addr
-	buff, oob []byte
-}
-
-type tsts struct {
-	sentAt time.Time
-	seq    uint16
-}
-
-func (p *Pinger) txTsDispatcher(ch <-chan tsts) {
-	for t := range ch {
-		p.dispatchSendTs(t.seq, t.sentAt)
-	}
-}
-
-func (p *Pinger) dispatcher(ch <-chan socketMessage) {
+func (p *Pinger) dispatcher(ch <-chan sockMsg) {
 	for msg := range ch {
 		p.dispatch(msg.addr, msg.buff, msg.oob)
 	}
@@ -213,44 +195,35 @@ func (p *Pinger) dispatcher(ch <-chan socketMessage) {
 func (p *Pinger) dispatch(srcAddr net.Addr, buff, oob []byte) {
 	src, ok := srcAddr.(*net.UDPAddr)
 	if !ok {
-		fmt.Printf("src addr is not udp\n")
 		return
 	}
 	msg, err := icmp.ParseMessage(p.proto, buff)
 	if err != nil {
-		fmt.Printf("unable to parse icmp: %s\n", err)
 		return
 	}
 	echo, ok := msg.Body.(*icmp.Echo)
 	if !ok {
-		fmt.Println("msg body is not echo")
 		return
 	}
 	scms, err := unix.ParseSocketControlMessage(oob)
 	if err != nil {
-		fmt.Printf("unable to parse scm: %s\n", err)
 		return
 	}
 	var (
 		icmpErr error
 		ts      time.Time
+		ttl     uint8
 	)
-	// fmt.Printf("scms: %#v\n", scms)
-	for i, scm := range scms {
-		fmt.Printf("msg #%d: level: 0x%x, type: 0x%x\n", i, scm.Header.Level, scm.Header.Type)
+	for _, scm := range scms {
 		switch scm.Header.Level {
-		case unix.IPPROTO_IP, unix.IPPROTO_IPV6:
-			if (scm.Header.Level == unix.IPPROTO_IP &&
-				scm.Header.Type != unix.IP_RECVERR) ||
-				(scm.Header.Level == unix.IPPROTO_IPV6 &&
-					scm.Header.Type != unix.IPV6_RECVERR) {
-				continue
-			}
-			se := (*unix.SockExtendedErr)(unsafe.Pointer(&scm.Data[0]))
-			switch se.Errno {
-			case uint32(unix.EHOSTUNREACH):
+		case unix.SOL_IP, unix.SOL_IPV6:
+			switch scm.Header.Type {
+			case unix.IP_RECVERR, unix.IPV6_RECVERR:
+				se := (*unix.SockExtendedErr)(unsafe.Pointer(&scm.Data[0]))
+				if se.Errno != uint32(unix.EHOSTUNREACH) {
+					continue
+				}
 				switch se.Origin {
-				// TODO: unix.SO_EE_ORIGIN_LOCAL
 				case unix.SO_EE_ORIGIN_ICMP:
 					sa := (*unix.RawSockaddrInet4)(unsafe.Pointer(&scm.Data[unsafe.Sizeof(*se)]))
 					switch se.Type {
@@ -270,55 +243,43 @@ func (p *Pinger) dispatch(srcAddr net.Addr, buff, oob []byte) {
 						icmpErr = NewTimeExceededError(sa.Addr[:])
 					}
 				}
-			case uint32(unix.ENOMSG):
-				fmt.Println("enomsg")
-				if ts.IsZero() {
-					for _, scm := range scms[i:] {
-						if !(scm.Header.Level == unix.SOL_SOCKET &&
-							scm.Header.Type == unix.SO_TIMESTAMPING) {
-							continue
-						}
-						sts := (*unix.ScmTimestamping)(unsafe.Pointer(&scm.Data[0]))
-						hwTS := sts.Ts[0]
-						ts = time.Unix(hwTS.Unix())
-					}
-				}
-				p.dispatchSendTs(uint16(echo.Seq), ts)
-				return
-			}
-		case unix.SOL_SOCKET:
-			if scm.Header.Type != unix.SO_TIMESTAMPNS {
+			case unix.IP_TTL, unix.IPV6_HOPLIMIT:
+				ttl = uint8(*(*int32)(unsafe.Pointer(&scm.Data[0])))
+			default:
 				continue
 			}
-			fmt.Println("set SO_TIMESTAMPNS")
-			sts := (*unix.ScmTimestamping)(unsafe.Pointer(&scm.Data[0]))
-			hwTS := sts.Ts[0]
-			ts = time.Unix(hwTS.Unix())
-			// fmt.Printf("sts: %#v\n", sts)
+
+		case unix.SOL_SOCKET:
+			if scm.Header.Type != unix.SO_TIMESTAMPNS_NEW {
+				continue
+			}
+			ts = time.Unix((*unix.Timespec)(unsafe.Pointer(&scm.Data[0])).Unix())
+		default:
+			continue
 		}
 	}
-	p.dispatchEcho(ts, src.IP, echo, icmpErr)
+	p.dispatchEcho(ts, src.IP, echo, ttl, icmpErr)
 }
 
-func (p *Pinger) dispatchSendTs(seq uint16, sentAt time.Time) {
+func (p *Pinger) dispatchTxTsEcho(echo *icmp.Echo, sentAt time.Time) {
+	p.dispatchTxTsSeq(uint16(echo.Seq), sentAt)
+}
+
+func (p *Pinger) dispatchTxTsSeq(seq uint16, sentAt time.Time) {
 	pend := p.seqs.get(seq)
 	if pend == nil {
 		return
 	}
-	fmt.Printf("recieved ts for seq %d\n", seq)
-	select {
-	case <-pend.ctx.Done():
-	case pend.sentAt <- sentAt:
-	}
-	fmt.Printf("set ts for seq %d\n", seq)
+	pend.sentAt = sentAt
 }
 
-func (p *Pinger) dispatchEcho(receivedAt time.Time, dst net.IP, echo *icmp.Echo, icmpErr error) {
-	p.dispatchSeq(receivedAt, dst, uint16(echo.Seq), echo.Data, icmpErr)
+func (p *Pinger) dispatchEcho(receivedAt time.Time, dst net.IP, echo *icmp.Echo,
+	ttl uint8, icmpErr error) {
+	p.dispatchSeq(receivedAt, dst, uint16(echo.Seq), echo.Data, ttl, icmpErr)
 }
 
 func (p *Pinger) dispatchSeq(receivedAt time.Time, dst net.IP, seq uint16,
-	payload []byte, icmpErr error) {
+	payload []byte, ttl uint8, icmpErr error) {
 	pend := p.seqs.pop(seq)
 	if pend == nil || !dst.Equal(pend.dst) {
 		// Drop the reply in following cases:
@@ -326,35 +287,19 @@ func (p *Pinger) dispatchSeq(receivedAt time.Time, dst net.IP, seq uint16,
 		//   * sender gave up waiting for the reply
 		//   * the echo reply came from the address, which is different from
 		//     the destination address, which the request was sent to
-		if pend == nil {
-			fmt.Printf("pend nil for seq %d\n", seq)
-		} else {
-			fmt.Printf("pend dst not eq for seq %d: dst: %s, pend.dst: %s\n", seq, dst, pend.dst)
-		}
 		return
 	}
-	fmt.Printf("===================== send seq: %d\n", seq)
 
-	var sentAt time.Time
-	// select {
-	// case <-pend.ctx.Done():
-	// 	fmt.Printf("pend cont done for seq %d\n", seq)
-	// 	return
-	// case sentAt = <-pend.sentAt:
-	// 	fmt.Printf("pend seq %d sentAt got\n", seq)
-	// }
 	select {
 	case <-pend.ctx.Done():
-		fmt.Printf("pend cont done for seq %d\n", seq)
 		// sender gave up waiting for the reply
-	// TODO: do not send anything is context is done
-	// TODO: and close the reply chan
+		return
 	case pend.reply <- Reply{
-		RTT:  receivedAt.Sub(sentAt),
+		RTT:  receivedAt.Sub(pend.sentAt),
+		TTL:  ttl,
 		Data: payload,
 		Err:  icmpErr,
 	}:
-		fmt.Printf("===================== sent seq: %d!\n", seq)
 	}
 }
 

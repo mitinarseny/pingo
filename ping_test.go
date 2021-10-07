@@ -2,6 +2,7 @@ package ping
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strconv"
@@ -22,32 +23,33 @@ func TestPinger(t *testing.T) {
 	require.NoError(t, err)
 	defer p.Close()
 
-	require.NoError(t, p.SetTTL(1))
-	ttl, err := p.TTL()
-	require.NoError(t, err)
+	ttl := TTL(1)
+	require.NoError(t, p.Set(ttl))
+	require.NoError(t, p.Get(&ttl))
 	require.EqualValues(t, 1, ttl)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
 	var g errgroup.Group
 	g.Go(func() error {
-		return p.Listen(ctx, 100, 20)
+		return p.Listen(ctx, 100, 200)
 	})
 
 	// wait for listen to start
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	t.Run("PingContext", func(t *testing.T) {
 		for i := uint16(0); i < 100; i++ {
 			i := i
 			t.Run(strconv.FormatUint(uint64(i), 10), func(t *testing.T) {
-				t.Parallel()
-				// payload := make([]byte, 20)
-				// binary.LittleEndian.PutUint16(payload, i)
-				rtt, _, err := p.PingContextPayload(ctx, ipv4Loopback, nil)
+				// t.Parallel()
+				b := make([]byte, 2)
+				binary.BigEndian.PutUint16(b, i)
+				r, err := p.PingContextPayload(ctx, ipv4Loopback, b)
 				require.NoError(t, err)
-				require.NotZero(t, rtt)
-				// require.Equal(t, payload, got)
+				require.NoError(t, r.Err)
+				require.NotZero(t, r.RTT)
+				require.Equal(t, b, r.Data)
 			})
 		}
 	})
@@ -62,7 +64,7 @@ func BenchmarkPinger(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer p.Close()
-	if err := p.SetTTL(1); err != nil {
+	if err := p.Set(TTL(1)); err != nil {
 		b.Fatal(err)
 	}
 
@@ -78,11 +80,14 @@ func BenchmarkPinger(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		var sum time.Duration
 		for pb.Next() {
-			rtt, err := p.PingContext(ctx, ipv4Loopback)
+			r, err := p.PingContext(ctx, ipv4Loopback)
 			if err != nil {
 				b.Fatal(err)
 			}
-			sum += rtt
+			if r.Err != nil {
+				b.Fatal(err)
+			}
+			sum += r.RTT
 		}
 		atomic.AddInt64((*int64)(&sumRTT), int64(sum))
 	})
@@ -91,7 +96,7 @@ func BenchmarkPinger(b *testing.B) {
 	b.ReportMetric(float64(avgRtt.Microseconds()), "rtt(μs)/op")
 }
 
-func ExamplePinger_PingContextTimeout() {
+func ExamplePinger_PingNContextInterval() {
 	p, err := New(&net.UDPAddr{IP: net.IPv4zero}, nil)
 	if err != nil {
 		fmt.Println(err)
@@ -101,7 +106,6 @@ func ExamplePinger_PingContextTimeout() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var g errgroup.Group
 	g.Go(func() error {
-		// TODO: msgBuffSize
 		return p.Listen(ctx, 10, 0)
 	})
 
@@ -113,10 +117,10 @@ func ExamplePinger_PingContextTimeout() {
 	}()
 
 	const send = 3
-	rtt, received, err := p.PingNContextInterval(ctx, net.IPv4(8, 8, 8, 8), send, 5*time.Second)
+	rs, err := p.PingNContextInterval(ctx, net.IPv4(8, 8, 8, 8), send, 5*time.Second)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	fmt.Printf("packet loss: %f, avg RTT: %s", float32(send-received)/float32(send), rtt)
+	fmt.Printf("packet loss: %f, avg RTT: %s\n", float32(send-len(rs))/float32(send), rs.AvgRTT())
 }

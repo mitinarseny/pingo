@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	ping "github.com/mitinarseny/pingo"
 	"golang.org/x/sync/errgroup"
 )
 
-var ttl = flag.Uint("t", 0, "TTL")
+var ttl = flag.Uint("t", 64, "TTL")
+var timeout = flag.Duration("T", 0, "Timeout")
+var mark = flag.Uint("m", 0, "Mark")
 
 func main() {
 	if err := flag.CommandLine.Parse(os.Args[1:]); err != nil {
@@ -24,7 +27,8 @@ func main() {
 }
 
 func run(args []string) error {
-	ip := net.IPv4(127, 0, 0, 1)
+	time.Sleep(0)
+	ip := net.IPv4(127, 0, 0, 1).To4()
 	if len(args) == 1 {
 		ip = net.ParseIP(args[0])
 		if ip == nil {
@@ -36,29 +40,49 @@ func run(args []string) error {
 		return err
 	}
 	defer p.Close()
-
-	if *ttl > 0 {
-		if err := p.SetTTL(uint8(*ttl)); err != nil {
-			return fmt.Errorf("set ttl: %w", err)
-		}
+	var tt ping.TTL
+	var mm ping.Mark
+	if err := p.Get(&tt, &mm); err != nil {
+		return err
 	}
+	fmt.Println("ttl:", tt, "mark:", mm)
+	//
+	// if *ttl > 0 {
+	// 	if err := p.SetTTL(uint8(*ttl)); err != nil {
+	// 		return fmt.Errorf("set ttl: %w", err)
+	// 	}
+	// }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-
-	var g errgroup.Group
-	g.Go(func() error {
+	var gl errgroup.Group
+	gl.Go(func() error {
 		err := p.Listen(ctx, 10, 1500)
 		fmt.Printf("listen err: %s\n", err)
 		return err
 	})
-	for i := 0; i < 10; i++ {
-		// time.Sleep(100*time.Millisecond)
-		rtt, err := p.PingContext(ctx, ip)
-			fmt.Printf("%d rtt: %s, err: %s\n", i, rtt, err)
+
+	g, ctx := errgroup.WithContext(ctx)
+
+	opts := []ping.SetOption{ping.TTL(uint8(*ttl))}
+	if *mark > 0 {
+		opts = append(opts, ping.Mark(*mark))
+	}
+
+	for i := 0; i < 100; i++ {
+		i := i
+		g.Go(func() error {
+			r, err := p.PingContext(ctx, ip)
+			fmt.Printf("%d rtt: %s, rerr: %s, ttl: %d, err: %s\n", i, r.RTT, r.Err, r.TTL, err)
+			return err
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return err
 	}
 
 	cancel()
-	return g.Wait()
+	return gl.Wait()
 }
