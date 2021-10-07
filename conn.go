@@ -108,7 +108,7 @@ func (p *Pinger) Listen(ctx context.Context, msgBuffSize, maxPayloadSize int) er
 		_ = p.c.SetReadDeadline(time.Now())
 	}()
 
-	ch := make(chan sockMsg, 100)
+	ch := make(chan sockMsg, msgBuffSize)
 	defer close(ch)
 
 	go p.dispatcher(ch)
@@ -145,7 +145,7 @@ func (p *Pinger) read4(ch chan<- sockMsg, msgBuffSize, buffSize int) error {
 		n, err := p.c4.ReadBatch(ms, 0)
 		if errors.Is(err, unix.EHOSTUNREACH) {
 			// there should be at least one ICMP error
-			n, err = p.c4.ReadBatch(ms, unix.MSG_ERRQUEUE|unix.MSG_WAITFORONE)
+			n, err = p.c4.ReadBatch(ms, unix.MSG_ERRQUEUE)
 		}
 		if err != nil {
 			return err
@@ -216,7 +216,7 @@ func (p *Pinger) dispatch(receivedAt time.Time, srcAddr net.Addr, buff, oob []by
 	}
 	var (
 		icmpErr error
-		ttl     uint8
+		ttl     TTL
 	)
 	for _, scm := range scms {
 		switch scm.Header.Level {
@@ -248,7 +248,7 @@ func (p *Pinger) dispatch(receivedAt time.Time, srcAddr net.Addr, buff, oob []by
 					}
 				}
 			case unix.IP_TTL, unix.IPV6_HOPLIMIT:
-				ttl = uint8(*(*int32)(unsafe.Pointer(&scm.Data[0])))
+				ttl.Unmarshal(scm.Data)
 			default:
 				continue
 			}
@@ -262,7 +262,7 @@ func (p *Pinger) dispatch(receivedAt time.Time, srcAddr net.Addr, buff, oob []by
 			continue
 		}
 	}
-	p.dispatchEcho(receivedAt, src.IP, echo, ttl, icmpErr)
+	p.dispatchEcho(receivedAt, src.IP, echo, uint8(ttl), icmpErr)
 }
 
 func (p *Pinger) dispatchTxTsEcho(echo *icmp.Echo, sentAt time.Time) {
@@ -284,13 +284,11 @@ func (p *Pinger) dispatchEcho(receivedAt time.Time, dst net.IP, echo *icmp.Echo,
 
 func (p *Pinger) dispatchSeq(receivedAt time.Time, dst net.IP, seq uint16,
 	payload []byte, ttl uint8, icmpErr error) {
-	pend := p.seqs.pop(seq)
-	if pend == nil || !dst.Equal(pend.dst) {
+	pend := p.seqs.get(seq)
+	if pend == nil {
 		// Drop the reply in following cases:
 		//   * we did not send the echo request, which the reply came to
 		//   * sender gave up waiting for the reply
-		//   * the echo reply came from the address, which is different from
-		//     the destination address, which the request was sent to
 		return
 	}
 

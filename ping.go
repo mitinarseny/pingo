@@ -31,7 +31,7 @@ type Pinger struct {
 //
 // To enable receiving packets, Listen() should be called on returned Pinger.
 // Close() should be called after Listen() returns.
-func New(laddr *net.UDPAddr, dst net.IP) (p *Pinger, err error) {
+func New(laddr *net.UDPAddr, dst net.IP, opts ...SetOption) (p *Pinger, err error) {
 	if laddr == nil {
 		laddr = new(net.UDPAddr)
 	}
@@ -59,6 +59,10 @@ func New(laddr *net.UDPAddr, dst net.IP) (p *Pinger, err error) {
 			p.Close()
 		}
 	}()
+
+	if err := p.Set(opts...); err != nil {
+		return nil, err
+	}
 
 	switch family {
 	case unix.AF_INET:
@@ -97,7 +101,7 @@ func (p *Pinger) PingContextPayload(ctx context.Context, dst net.IP, payload []b
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	seq, ch, err := p.seqs.add(ctx, dst)
+	seq, ch, err := p.seqs.add(ctx)
 	if err != nil {
 		return Reply{}, err
 	}

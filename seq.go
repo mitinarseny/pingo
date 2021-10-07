@@ -2,12 +2,9 @@ package ping
 
 import (
 	"context"
-	"fmt"
 	"math"
-	"net"
-	"sync/atomic"
+	"sync"
 	"time"
-	"unsafe"
 )
 
 // pending holds information about the sent request
@@ -15,79 +12,149 @@ type pending struct {
 	// ctx is context of the sender
 	ctx context.Context
 
-	// dst is the destination, which the request was sent to
-	dst net.IP
-
+	// sentAt is the timestamp when the request was sent
 	sentAt time.Time
 
 	// reply is where to send the reply to
 	reply chan<- Reply
 }
 
-// sequences manages sequence numbers and associated with them pendings
 type sequences struct {
-	pending   []*pending
-	available chan uint16
+	m  map[uint16]*pending
+	mu sync.RWMutex
+
+	r *reserve
 }
 
-// newSequences creates new sequences with all 2^16 sequence numbers available
 func newSequences() *sequences {
-	available := make(chan uint16, 1<<16)
+	return &sequences{
+		m: make(map[uint16]*pending),
+		r: newReserve(),
+	}
+}
+
+func (s *sequences) add(ctx context.Context) (uint16, <-chan Reply, error) {
+	seq, err := s.r.get(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	rep := make(chan Reply, 1)
+	s.mu.Lock()
+	s.m[seq] = &pending{
+		ctx:    ctx,
+		sentAt: time.Now(),
+		reply:  rep,
+	}
+	s.mu.Unlock()
+	return seq, rep, nil
+}
+
+func (s *sequences) get(seq uint16) *pending {
+	s.mu.RLock()
+	p := s.m[seq]
+	s.mu.RUnlock()
+	return p
+}
+
+func (s *sequences) free(seq uint16) *pending {
+	s.mu.Lock()
+	p, found := s.m[seq]
+	delete(s.m, seq)
+	s.mu.Unlock()
+	if !found {
+		return nil
+	}
+	s.r.free(seq)
+	return p
+}
+
+func makeReserveCh() (chan<- uint16, <-chan uint16) {
+	ch := make(chan uint16, 1<<16)
 	for seq := uint16(0); ; seq++ {
-		available <- seq
-		if seq == math.MaxUint16 {
-			// compare here to avoid uint16 overflow,
-			// since uint16(1<<16-1) + 1 == uint16(0)
-			// and loop will run indefinitely
+		ch <- seq
+		if seq == 1<<16-1 {
 			break
 		}
 	}
-	return &sequences{
-		pending:   make([]*pending, 1<<16),
-		available: available,
+	return ch, ch
+}
+
+// makeReserveCh creates FIFO with reserved values pushed to the read side
+// of the channel when there is actually no data to read. Values are taken
+// from range [min, max). Each of these values is pushed only once.
+// Read side of the channel is closed when all of values sent to the write
+// side of the channel had been received after the write side has been closed.
+func makeReserveCh1() (chan<- uint16, <-chan uint16) {
+	in, out := make(chan uint16), make(chan uint16)
+	var used uint16
+	go func() {
+		inQ := make([]uint16, 0, 1)
+		var (
+			outCh  chan<- uint16
+			curVal uint16
+		)
+		for in != nil || len(inQ) > 0 {
+			if len(inQ) == 0 && used < math.MaxUint16 {
+				inQ = append(inQ, used)
+				used++
+			}
+			if len(inQ) > 0 {
+				outCh = out
+				curVal = inQ[0]
+			} else {
+				outCh = nil
+			}
+			select {
+			case v, ok := <-in:
+				if !ok {
+					// send the rest to out and return
+					for _, v := range inQ {
+						out <- v
+					}
+					close(out)
+					return
+				}
+				select {
+				case out <- v:
+				default:
+					inQ = append(inQ, v)
+				}
+			case outCh <- curVal:
+				l := len(inQ)
+				inQ[0] = inQ[l-1]
+				inQ = inQ[:l-1]
+			}
+		}
+	}()
+	return in, out
+}
+
+type reserve struct {
+	toFree chan<- uint16
+	freed  <-chan uint16
+}
+
+func newReserve() *reserve {
+	toFree, freed := makeReserveCh()
+	return &reserve{
+		toFree: toFree,
+		freed:  freed,
 	}
 }
 
-// TODO: sequences.Close()?
+func (r *reserve) close() {
+	close(r.toFree)
+}
 
-// add adds pending request and returns allocated sequence number and the
-// channel, which the reply rtt is going to be sent to.
-// The caller should call free(seq) when the allocated sequence number is no
-// longer needed.
-func (s *sequences) add(ctx context.Context, dst net.IP) (uint16, <-chan Reply, error) {
+func (r *reserve) get(ctx context.Context) (uint16, error) {
 	select {
 	case <-ctx.Done():
-		return 0, nil, ctx.Err()
-	case seq := <-s.available:
-		rep := make(chan Reply, 1)
-		if !atomic.CompareAndSwapPointer((*unsafe.Pointer)(unsafe.Pointer(&s.pending[seq])),
-			nil, unsafe.Pointer(&pending{
-				ctx:    ctx,
-				dst:    dst,
-				// TODO: recv transmit timestamps from socket error queue
-				// https://github.com/golang/go/issues/47926
-				sentAt: time.Now(),
-				reply:  rep,
-			})) {
-			panic(fmt.Errorf("seq %d is busy", seq))
-		}
-		return seq, rep, nil
+		return 0, ctx.Err()
+	case id := <-r.freed:
+		return id, nil
 	}
 }
 
-func (s *sequences) pop(seq uint16) *pending {
-	return (*pending)(atomic.SwapPointer((*unsafe.Pointer)(unsafe.Pointer(&s.pending[seq])), nil))
-}
-
-// get returns active pending request associated with given sequence number
-// It returns nil if there is no pending request for given sequence number.
-func (s *sequences) get(seq uint16) *pending {
-	return (*pending)(atomic.LoadPointer(
-		(*unsafe.Pointer)(unsafe.Pointer(&s.pending[seq]))))
-}
-
-// free deallocates given sequence number, making it available again with add()
-func (s *sequences) free(seq uint16) {
-	atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&s.pending[seq])), nil)
-	s.available <- seq
+func (r *reserve) free(id uint16) {
+	r.toFree <- id
 }

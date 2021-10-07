@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -35,7 +36,7 @@ func run(args []string) error {
 			return fmt.Errorf("not an ip address: %s", args[0])
 		}
 	}
-	p, err := ping.New(nil, nil)
+	p, err := ping.New(nil, nil, ping.TTL(1))
 	if err != nil {
 		return err
 	}
@@ -59,24 +60,39 @@ func run(args []string) error {
 	var gl errgroup.Group
 	gl.Go(func() error {
 		err := p.Listen(ctx, 10, 1500)
-		fmt.Printf("listen err: %s\n", err)
 		return err
 	})
+	time.Sleep(1 * time.Second)
 
 	g, ctx := errgroup.WithContext(ctx)
 
-	opts := []ping.SetOption{ping.TTL(uint8(*ttl))}
+	var opts []ping.SetOption
+	if *ttl > 0 {
+		opts = append(opts, ping.TTL(uint8(*ttl)))
+	}
 	if *mark > 0 {
 		opts = append(opts, ping.Mark(*mark))
 	}
 
-	for i := 0; i < 100; i++ {
+	ch := make(chan int)
+	go func() {
+		var ii int
+		for range ch {
+			ii++
+			fmt.Println(ii)
+		}
+	}()
+
+	for i := 0; i < 10; i++ {
 		i := i
-		g.Go(func() error {
+		// g.Go(func() error {
 			r, err := p.PingContext(ctx, ip)
-			fmt.Printf("%d rtt: %s, rerr: %s, ttl: %d, err: %s\n", i, r.RTT, r.Err, r.TTL, err)
-			return err
-		})
+			if err != nil || r.Err != nil {
+				fmt.Printf("%d: rerr: %s, err: %s", i, r.Err, err)
+			}
+			ch <- i
+			// return err
+		// })
 	}
 
 	if err := g.Wait(); err != nil {
@@ -84,5 +100,9 @@ func run(args []string) error {
 	}
 
 	cancel()
-	return gl.Wait()
+	err = gl.Wait()
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
