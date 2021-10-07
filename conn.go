@@ -128,8 +128,9 @@ func (p *Pinger) Listen(ctx context.Context, msgBuffSize, maxPayloadSize int) er
 }
 
 type sockMsg struct {
-	addr      net.Addr
-	buff, oob []byte
+	addr       net.Addr
+	buff, oob  []byte
+	receivedAt time.Time
 }
 
 func (p *Pinger) read4(ch chan<- sockMsg, msgBuffSize, buffSize int) error {
@@ -149,11 +150,13 @@ func (p *Pinger) read4(ch chan<- sockMsg, msgBuffSize, buffSize int) error {
 		if err != nil {
 			return err
 		}
+		receivedAt := time.Now()
 		for _, m := range ms[:n] {
 			ch <- sockMsg{
-				addr: m.Addr,
-				buff: m.Buffers[0][:m.N],
-				oob:  m.OOB[:m.NN],
+				addr:       m.Addr,
+				buff:       m.Buffers[0][:m.N],
+				oob:        m.OOB[:m.NN],
+				receivedAt: receivedAt,
 			}
 		}
 	}
@@ -176,11 +179,13 @@ func (p *Pinger) read6(ch chan<- sockMsg, msgBuffSize, buffSize int) error {
 		if err != nil {
 			return err
 		}
+		receivedAt := time.Now()
 		for _, m := range ms[:n] {
 			ch <- sockMsg{
-				addr: m.Addr,
-				buff: m.Buffers[0][:m.N],
-				oob:  m.OOB[:m.NN],
+				addr:       m.Addr,
+				buff:       m.Buffers[0][:m.N],
+				oob:        m.OOB[:m.NN],
+				receivedAt: receivedAt,
 			}
 		}
 	}
@@ -188,11 +193,11 @@ func (p *Pinger) read6(ch chan<- sockMsg, msgBuffSize, buffSize int) error {
 
 func (p *Pinger) dispatcher(ch <-chan sockMsg) {
 	for msg := range ch {
-		p.dispatch(msg.addr, msg.buff, msg.oob)
+		p.dispatch(msg.receivedAt, msg.addr, msg.buff, msg.oob)
 	}
 }
 
-func (p *Pinger) dispatch(srcAddr net.Addr, buff, oob []byte) {
+func (p *Pinger) dispatch(receivedAt time.Time, srcAddr net.Addr, buff, oob []byte) {
 	src, ok := srcAddr.(*net.UDPAddr)
 	if !ok {
 		return
@@ -211,7 +216,6 @@ func (p *Pinger) dispatch(srcAddr net.Addr, buff, oob []byte) {
 	}
 	var (
 		icmpErr error
-		ts      time.Time
 		ttl     uint8
 	)
 	for _, scm := range scms {
@@ -253,12 +257,12 @@ func (p *Pinger) dispatch(srcAddr net.Addr, buff, oob []byte) {
 			if scm.Header.Type != unix.SO_TIMESTAMPNS_NEW {
 				continue
 			}
-			ts = time.Unix((*unix.Timespec)(unsafe.Pointer(&scm.Data[0])).Unix())
+			receivedAt = time.Unix((*unix.Timespec)(unsafe.Pointer(&scm.Data[0])).Unix())
 		default:
 			continue
 		}
 	}
-	p.dispatchEcho(ts, src.IP, echo, ttl, icmpErr)
+	p.dispatchEcho(receivedAt, src.IP, echo, ttl, icmpErr)
 }
 
 func (p *Pinger) dispatchTxTsEcho(echo *icmp.Echo, sentAt time.Time) {

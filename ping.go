@@ -60,10 +60,6 @@ func New(laddr *net.UDPAddr, dst net.IP) (p *Pinger, err error) {
 		}
 	}()
 
-	if err := p.Set(timestampNs(true)); err != nil {
-		return nil, err
-	}
-
 	switch family {
 	case unix.AF_INET:
 		p.c4 = ipv4.NewPacketConn(c)
