@@ -21,9 +21,13 @@ type Pinger struct {
 	// TODO: optimize?
 	optIDs *optIDs
 
-	// proto is IANA ICMP Protocol Number
+	// proto is unix.
 	proto int
+
+	mtu int32
 }
+
+const defaultMTU = 1500
 
 // New creates a new Pinger with given local and destination addresses.
 // laddr should be a valid IP address, while dst could be nil.
@@ -55,6 +59,7 @@ func New(laddr *net.UDPAddr, dst net.IP, opts ...WOption) (p *Pinger, err error)
 			c.Close()
 		}
 	}()
+
 	rc, err := c.(syscall.Conn).SyscallConn()
 	if err != nil {
 		return nil, err
@@ -66,16 +71,22 @@ func New(laddr *net.UDPAddr, dst net.IP, opts ...WOption) (p *Pinger, err error)
 		seqs:   newSequences(),
 		optIDs: newOptIDs(),
 		proto:  proto,
+		mtu:    defaultMTU,
 	}
 
-	if err := p.Set(timestamping(
-		unix.SOF_TIMESTAMPING_RX_SOFTWARE |
-			unix.SOF_TIMESTAMPING_TX_SCHED |
-			unix.SOF_TIMESTAMPING_OPT_CMSG |
-			unix.SOF_TIMESTAMPING_OPT_ID |
-			unix.SOF_TIMESTAMPING_OPT_TSONLY |
-			unix.SOF_TIMESTAMPING_SOFTWARE)); err != nil {
-		return nil, err
+	if dst != nil {
+		// socket should be connected, get MTU
+		var mtu Int32Option
+		switch p.proto {
+		case unix.IPPROTO_ICMP:
+			mtu = MTU(0)
+		case unix.IPPROTO_ICMPV6:
+			mtu = MTU6(0)
+		}
+		if err := p.Get(mtu); err != nil {
+			return nil, fmt.Errorf("failed to get MTU: %w", err)
+		}
+		p.mtu = mtu.Get()
 	}
 
 	switch family {
@@ -87,6 +98,16 @@ func New(laddr *net.UDPAddr, dst net.IP, opts ...WOption) (p *Pinger, err error)
 		if err := p.Set(recvErr6(true), recvHopLimit(true)); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := p.Set(timestamping(
+		unix.SOF_TIMESTAMPING_RX_SOFTWARE |
+			unix.SOF_TIMESTAMPING_TX_SCHED |
+			unix.SOF_TIMESTAMPING_OPT_CMSG |
+			unix.SOF_TIMESTAMPING_OPT_ID |
+			unix.SOF_TIMESTAMPING_OPT_TSONLY |
+			unix.SOF_TIMESTAMPING_SOFTWARE)); err != nil {
+		return nil, err
 	}
 
 	if err := p.Set(opts...); err != nil {
@@ -196,7 +217,7 @@ type Reply struct {
 
 	// Err is an error occurred while sending ICMP Echo Request
 	// or waiting for the reply
-	Err error
+	Err ICMPError
 }
 
 type Replies []Reply

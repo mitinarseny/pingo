@@ -7,6 +7,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func MTU(mtu int32) Int32Option {
+	return NewInt32Option(unix.SOL_IP, unix.IP_MTU)
+}
+
+func MTU6(mtu int32) Int32Option {
+	return NewInt32Option(unix.SOL_IPV6, unix.IPV6_MTU)
+}
+
 func TTL(ttl uint8) Uint8Option {
 	return NewUint8Option(unix.SOL_IP, unix.IP_TTL).Set(ttl)
 }

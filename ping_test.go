@@ -2,12 +2,12 @@ package ping
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"strconv"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"net"
 	"testing"
@@ -32,7 +32,7 @@ func TestPinger(t *testing.T) {
 
 	var g errgroup.Group
 	g.Go(func() error {
-		return p.Listen(ctx, 200)
+		return p.Listen(ctx)
 	})
 
 	// wait for listen to start
@@ -43,8 +43,8 @@ func TestPinger(t *testing.T) {
 			i := i
 			t.Run(strconv.FormatUint(uint64(i), 10), func(t *testing.T) {
 				t.Parallel()
-				b := make([]byte, 2)
-				binary.BigEndian.PutUint16(b, i)
+				b := make([]byte, unsafe.Sizeof(i))
+				*(*uint16)(unsafe.Pointer(&b[0])) = i
 				r, err := p.PingContextPayload(ctx, ipv4Loopback, b)
 				require.NoError(t, err)
 				require.NoError(t, r.Err)
@@ -68,8 +68,7 @@ func BenchmarkPinger(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// TODO: msgBuffSize
-	go p.Listen(ctx, 0)
+	go p.Listen(ctx)
 
 	var sumRTT time.Duration
 
@@ -103,7 +102,7 @@ func ExamplePinger_PingNContextInterval() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var g errgroup.Group
 	g.Go(func() error {
-		return p.Listen(ctx, 0)
+		return p.Listen(ctx)
 	})
 
 	defer func() {

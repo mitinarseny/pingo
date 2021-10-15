@@ -74,7 +74,7 @@ func run(args []string) error {
 
 	var gl errgroup.Group
 	gl.Go(func() error {
-		err := p.Listen(ctx, 1500)
+		err := p.Listen(ctx)
 		fmt.Printf("listen exited: %s\n", err)
 		return err
 	})

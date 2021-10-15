@@ -45,7 +45,8 @@ type DestinationUnreachableError struct {
 	code DstUnreachableCode
 }
 
-func NewDestinationUnreachableError(from net.IP, code DstUnreachableCode) error {
+func NewDestinationUnreachableError(from net.IP,
+	code DstUnreachableCode) DestinationUnreachableError {
 	return DestinationUnreachableError{
 		from: from,
 		code: code,
@@ -66,7 +67,7 @@ func (e DestinationUnreachableError) Unwrap() error {
 
 type TimeExceededError net.IP
 
-func NewTimeExceededError(from net.IP) error {
+func NewTimeExceededError(from net.IP) TimeExceededError {
 	return TimeExceededError(from)
 }
 

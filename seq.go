@@ -19,6 +19,7 @@ type pending struct {
 	reply chan<- Reply
 }
 
+// sequences associates ICMP sequence numbers with pending requests
 type sequences struct {
 	m  map[uint16]*pending
 	mu sync.RWMutex
@@ -33,6 +34,13 @@ func newSequences() *sequences {
 	}
 }
 
+// close frees resources allocated for sequences
+func (s *sequences) close() {
+	s.r.close()
+}
+
+// add returns available ICMP sequence number and a channel where send the Reply to
+// unless given ctx is done.
 func (s *sequences) add(ctx context.Context) (uint16, <-chan Reply, error) {
 	seq, err := s.r.get(ctx)
 	if err != nil {
@@ -49,6 +57,39 @@ func (s *sequences) add(ctx context.Context) (uint16, <-chan Reply, error) {
 	return seq, rep, nil
 }
 
+// sentAt updates the transmit timestamp for given ICMP sequence number.
+// It should not be concurrently used with sequences.reply().
+func (s *sequences) sentAt(seq uint16, sentAt time.Time) {
+	pend := s.get(seq)
+	if pend == nil {
+		return
+	}
+	pend.sentAt = sentAt
+}
+
+// reply dispatches the reply for given sequence number to the sender.
+// It should not be concurrentlyy used with sequences.sentAt()
+func (s *sequences) reply(seq uint16, receivedAt time.Time,
+	payload []byte, ttl uint8, icmpErr ICMPError) {
+	pend := s.get(seq)
+	if pend == nil {
+		return
+	}
+	select {
+	case <-pend.ctx.Done():
+		// sender gave up waiting fr the reply
+		return
+	case pend.reply <- Reply{
+		RTT:  receivedAt.Sub(pend.sentAt),
+		TTL:  ttl,
+		Data: payload,
+		Err:  icmpErr,
+	}:
+	}
+}
+
+// get returns pending associates with given ICMP sequence number if any.
+// Otherwise, it returns nil.
 func (s *sequences) get(seq uint16) *pending {
 	s.mu.RLock()
 	p := s.m[seq]
@@ -56,6 +97,7 @@ func (s *sequences) get(seq uint16) *pending {
 	return p
 }
 
+// free frees resources associated with given ICMP sequence number.
 func (s *sequences) free(seq uint16) *pending {
 	s.mu.Lock()
 	p, found := s.m[seq]
@@ -68,6 +110,42 @@ func (s *sequences) free(seq uint16) *pending {
 	return p
 }
 
+// reserve stores unique uint16 sequence 
+type reserve struct {
+	toFree chan<- uint16
+	freed  <-chan uint16
+}
+
+func newReserve() *reserve {
+	toFree, freed := makeReserveCh()
+	return &reserve{
+		toFree: toFree,
+		freed:  freed,
+	}
+}
+
+// close frees resources allocated for reserve
+func (r *reserve) close() {
+	close(r.toFree)
+}
+
+// get allocates unique uint16 unless ctx is done. The returned number should
+// then be freed with reserve.free() to make it availbale for future usage.
+func (r *reserve) get(ctx context.Context) (uint16, error) {
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case id := <-r.freed:
+		return id, nil
+	}
+}
+
+// free pushes back given id, making it available to reserve.get() again.
+func (r *reserve) free(id uint16) {
+	r.toFree <- id
+}
+
+// TODO: doc
 func makeReserveCh() (chan<- uint16, <-chan uint16) {
 	ch := make(chan uint16, 1<<16)
 	for seq := uint16(0); ; seq++ {
@@ -79,6 +157,7 @@ func makeReserveCh() (chan<- uint16, <-chan uint16) {
 	return ch, ch
 }
 
+// TODO: remove?
 // makeReserveCh creates FIFO with reserved values pushed to the read side
 // of the channel when there is actually no data to read. Values are taken
 // from range [min, max). Each of these values is pushed only once.
@@ -127,34 +206,4 @@ func makeReserveCh1() (chan<- uint16, <-chan uint16) {
 		}
 	}()
 	return in, out
-}
-
-type reserve struct {
-	toFree chan<- uint16
-	freed  <-chan uint16
-}
-
-func newReserve() *reserve {
-	toFree, freed := makeReserveCh()
-	return &reserve{
-		toFree: toFree,
-		freed:  freed,
-	}
-}
-
-func (r *reserve) close() {
-	close(r.toFree)
-}
-
-func (r *reserve) get(ctx context.Context) (uint16, error) {
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case id := <-r.freed:
-		return id, nil
-	}
-}
-
-func (r *reserve) free(id uint16) {
-	r.toFree <- id
 }
