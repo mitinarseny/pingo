@@ -23,16 +23,16 @@ func TestPinger(t *testing.T) {
 	require.NoError(t, err)
 	defer p.Close()
 
-	// ttl := TTL(1)
-	// require.NoError(t, p.Set(ttl))
-	// require.NoError(t, p.Get(&ttl))
-	// require.EqualValues(t, 1, ttl)
+	ttl := TTL(1)
+	require.NoError(t, p.Set(ttl))
+	require.NoError(t, p.Get(ttl))
+	require.EqualValues(t, 1, ttl.Get())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
 	var g errgroup.Group
 	g.Go(func() error {
-		return p.Listen(ctx, 100, 200)
+		return p.Listen(ctx, 200)
 	})
 
 	// wait for listen to start
@@ -42,7 +42,7 @@ func TestPinger(t *testing.T) {
 		for i := uint16(0); i < 100; i++ {
 			i := i
 			t.Run(strconv.FormatUint(uint64(i), 10), func(t *testing.T) {
-				// t.Parallel()
+				t.Parallel()
 				b := make([]byte, 2)
 				binary.BigEndian.PutUint16(b, i)
 				r, err := p.PingContextPayload(ctx, ipv4Loopback, b)
@@ -69,7 +69,7 @@ func BenchmarkPinger(b *testing.B) {
 	defer cancel()
 
 	// TODO: msgBuffSize
-	go p.Listen(ctx, 10, 0)
+	go p.Listen(ctx, 0)
 
 	var sumRTT time.Duration
 
@@ -103,7 +103,7 @@ func ExamplePinger_PingNContextInterval() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var g errgroup.Group
 	g.Go(func() error {
-		return p.Listen(ctx, 10, 0)
+		return p.Listen(ctx, 0)
 	})
 
 	defer func() {

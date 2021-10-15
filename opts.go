@@ -1,9 +1,8 @@
 package ping
 
 import (
-	"net"
+	"fmt"
 	"os"
-	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -15,76 +14,348 @@ type Option interface {
 	Len() uint64
 }
 
-type SetOption interface {
-	Option
-	Marshal([]byte)
-}
-
-type GetOption interface {
+// ROption is a read getsockopt option
+type ROption interface {
 	Option
 	Unmarshal([]byte)
 }
 
-type GenericOption struct {
-	Lvl   int32
-	Typ   int32
-	Value []byte
+// WOption is a write setsockopt option
+type WOption interface {
+	Option
+	Marshal([]byte)
 }
 
-func (o *GenericOption) Level() int32 {
-	return o.Lvl
+// RWOption is a read/write (get/set)sockopt option
+type RWOption interface {
+	ROption
+	WOption
 }
 
-func (o *GenericOption) Type() int32 {
-	return o.Typ
+type opt struct {
+	lvl    int32
+	typ    int32
+	length uintptr
+	p      unsafe.Pointer
 }
 
-func (o *GenericOption) Len() uint64 {
-	return uint64(len(o.Value))
+func NewOption(lvl, typ int32, length uintptr, p unsafe.Pointer) *opt {
+	return &opt{
+		lvl:    lvl,
+		typ:    typ,
+		length: length,
+		p:      p,
+	}
 }
 
-func (o *GenericOption) Marshal(b []byte) {
-	copy(b, o.Value)
+func (o *opt) Level() int32 {
+	return o.lvl
 }
 
-func (o *GenericOption) Unmarshal(b []byte) {
-	copy(o.Value, b)
+func (o *opt) Type() int32 {
+	return o.typ
 }
 
-type GenericBoolOption struct {
-	Lvl   int32
-	Typ   int32
-	Value bool
+func (o *opt) Len() uint64 {
+	return uint64(o.length)
 }
 
-func (o *GenericBoolOption) Level() int32 {
-	return o.Lvl
+func (o *opt) Value() unsafe.Pointer {
+	return o.p
 }
 
-func (o *GenericBoolOption) Type() int32 {
-	return o.Typ
+func (o *opt) set(length uintptr, p unsafe.Pointer) {
+	o.length = length
+	o.p = p
 }
 
-func (o *GenericBoolOption) Len() uint64 {
-	return uint64(unsafe.Sizeof(int32(0)))
+func (o *opt) Marshal(b []byte) {
+	if len(b) < int(o.length) {
+		panic(fmt.Errorf("marshal to buffer of insufficient length: %d, want: %d",
+			len(b), o.length))
+	}
+	copyP(unsafe.Pointer(&b[0]), o.p, o.length)
 }
 
-func (o *GenericBoolOption) Marshal(b []byte) {
-	marshalBoolAsInt32(b, o.Value)
+func (o *opt) Unmarshal(b []byte) {
+	copyP(o.p, unsafe.Pointer(&b[0]), min(uintptr(len(b)), o.length))
 }
 
-func (o *GenericBoolOption) Unmarshal(b []byte) {
-	o.Value = unmarshalBoolFromInt32(b)
+func copyP(dst, src unsafe.Pointer, l uintptr) {
+	var s uintptr
+	for {
+		if l >= unsafe.Sizeof(uint64(0)) {
+			s = unsafe.Sizeof(uint64(0))
+			*(*uint64)(dst) = *(*uint64)(src)
+		} else if l >= unsafe.Sizeof(uint32(0)) {
+			s = unsafe.Sizeof(uint32(0))
+			*(*uint32)(dst) = *(*uint32)(src)
+		} else if l >= unsafe.Sizeof(uint16(0)) {
+			s = unsafe.Sizeof(uint16(0))
+			*(*uint16)(dst) = *(*uint16)(src)
+		} else if l >= unsafe.Sizeof(uint8(0)) {
+			s = unsafe.Sizeof(uint8(0))
+			*(*uint8)(dst) = *(*uint8)(src)
+		} else {
+			break
+		}
+		l -= s
+		dst, src = unsafe.Pointer(uintptr(dst)+s), unsafe.Pointer(uintptr(src)+s)
+	}
+}
+
+func min(x, y uintptr) uintptr {
+	if x < y {
+		return x
+	}
+	return y
+}
+
+type BoolOption interface {
+	RWOption
+	Get() bool
+	Set(bool) BoolOption
+}
+
+type boolOpt struct {
+	*opt
+}
+
+func NewBoolOption(lvl, typ int32) BoolOption {
+	return boolOpt{NewUint8Option(lvl, typ).(uint8Opt).opt}
+}
+
+func (o boolOpt) Get() bool {
+	return uint8Opt{o.opt}.Get() != 0
+}
+
+func (o boolOpt) Set(v bool) BoolOption {
+	var vv uint8
+	if v {
+		vv = 1
+	}
+	uint8Opt{o.opt}.Set(vv)
+	return o
+}
+
+type Int8Option interface {
+	RWOption
+	Get() int8
+	Set(int8) Int8Option
+}
+
+type int8Opt struct {
+	*opt
+}
+
+func NewInt8Option(lvl, typ int32) Int8Option {
+	v := new(int8)
+	return int8Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
+}
+
+func (o int8Opt) Get() int8 {
+	return *(*int8)(o.Value())
+}
+
+func (o int8Opt) Set(v int8) Int8Option {
+	*(*int8)(o.Value()) = v
+	return o
+}
+
+type uint8Opt struct {
+	*opt
+}
+
+type Uint8Option interface {
+	RWOption
+	Get() uint8
+	Set(uint8) Uint8Option
+}
+
+func NewUint8Option(lvl, typ int32) Uint8Option {
+	v := new(uint8)
+	return uint8Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
+}
+
+func (o uint8Opt) Get() uint8 {
+	return *(*uint8)(o.Value())
+}
+
+func (o uint8Opt) Set(v uint8) Uint8Option {
+	*(*uint8)(o.Value()) = v
+	return o
+}
+
+type Int16Option interface {
+	RWOption
+	Get() int16
+	Set(int16) Int16Option
+}
+
+type int16Opt struct {
+	*opt
+}
+
+func NewInt16Option(lvl, typ int32) Int16Option {
+	v := new(int16)
+	return int16Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
+}
+
+func (o int16Opt) Get() int16 {
+	return *(*int16)(o.Value())
+}
+
+func (o int16Opt) Set(v int16) Int16Option {
+	*(*int16)(o.Value()) = v
+	return o
+}
+
+type Uint16Option interface {
+	RWOption
+	Get() uint16
+	Set(uint16) Uint16Option
+}
+
+type uint16Opt struct {
+	*opt
+}
+
+func NewUint16Option(lvl, typ int32) Uint16Option {
+	v := new(uint16)
+	return uint16Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
+}
+
+func (o uint16Opt) Get() uint16 {
+	return *(*uint16)(o.Value())
+}
+
+func (o uint16Opt) Set(v uint16) Uint16Option {
+	*(*uint16)(o.Value()) = v
+	return o
+}
+
+type Int32Option interface {
+	RWOption
+	Get() int32
+	Set(int32) Int32Option
+}
+
+type int32Opt struct {
+	*opt
+}
+
+func NewInt32Option(lvl, typ int32) Int32Option {
+	v := new(int32)
+	return int32Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
+}
+
+func (o int32Opt) Get() int32 {
+	return *(*int32)(o.Value())
+}
+
+func (o int32Opt) Set(v int32) Int32Option {
+	*(*int32)(o.Value()) = v
+	return o
+}
+
+type Uint32Option interface {
+	RWOption
+	Get() uint32
+	Set(uint32) Uint32Option
+}
+
+type uint32Opt struct {
+	*opt
+}
+
+func NewUint32Option(lvl, typ int32) Uint32Option {
+	v := new(uint32)
+	return uint32Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
+}
+
+func (o uint32Opt) Get() uint32 {
+	return *(*uint32)(o.Value())
+}
+
+func (o uint32Opt) Set(v uint32) Uint32Option {
+	*(*uint32)(o.Value()) = v
+	return o
+}
+
+type Int64Option interface {
+	RWOption
+	Get() int64
+	Set(int64) Int64Option
+}
+
+type int64Opt struct {
+	*opt
+}
+
+func NewInt64Option(lvl, typ int32) Int64Option {
+	v := new(int64)
+	return int64Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
+}
+
+func (o int64Opt) Get() int64 {
+	return *(*int64)(o.Value())
+}
+
+func (o int64Opt) Set(v int64) Int64Option {
+	*(*int64)(o.Value()) = v
+	return o
+}
+
+type Uint64Option interface {
+	RWOption
+	Get() uint64
+	Set(uint64) Uint64Option
+}
+
+type uint64Opt struct {
+	*opt
+}
+
+func NewUint64Option(lvl, typ int32) Uint64Option {
+	v := new(uint64)
+	return uint64Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
+}
+
+func (o uint64Opt) Get() uint64 {
+	return *(*uint64)(o.Value())
+}
+
+func (o uint64Opt) Set(v uint64) Uint64Option {
+	*(*uint64)(o.Value()) = v
+	return o
+}
+
+type bytesOpt struct {
+	*opt
+	v []byte
+}
+
+func NewBytesOption(lvl, typ int32, v []byte) *bytesOpt {
+	return &bytesOpt{
+		opt: NewOption(lvl, typ, uintptr(len(v)), unsafe.Pointer(&v[0])),
+		v:   v,
+	}
+}
+
+func (o *bytesOpt) Get() []byte {
+	return o.v
+}
+
+func (o *bytesOpt) Set(v []byte) *bytesOpt {
+	o.opt.set(uintptr(len(v)), unsafe.Pointer(&v[0]))
+	o.v = v
+	return o
 }
 
 // Set sets given options on the underlying socket with setsockopt(2)
-func (p *Pinger) Set(opts ...SetOption) error {
-	c, err := p.c.(syscall.Conn).SyscallConn()
-	if err != nil {
-		return err
-	}
+func (p *Pinger) Set(opts ...WOption) error {
 	var operr error
-	if err := c.Control(func(fd uintptr) {
+	if err := p.rc.Control(func(fd uintptr) {
 		for _, o := range opts {
 			b := make([]byte, o.Len())
 			o.Marshal(b)
@@ -101,13 +372,9 @@ func (p *Pinger) Set(opts ...SetOption) error {
 }
 
 // Get gets given options from the underlying socket with getsockopt(2)
-func (p *Pinger) Get(opts ...GetOption) error {
-	c, err := p.c.(syscall.Conn).SyscallConn()
-	if err != nil {
-		return err
-	}
+func (p *Pinger) Get(opts ...ROption) error {
 	var operr error
-	if err := c.Control(func(fd uintptr) {
+	if err := p.rc.Control(func(fd uintptr) {
 		for _, o := range opts {
 			var s string
 			s, operr = unix.GetsockoptString(int(fd), int(o.Level()), int(o.Type()))
@@ -122,7 +389,7 @@ func (p *Pinger) Get(opts ...GetOption) error {
 	return os.NewSyscallError("getsockopt", operr)
 }
 
-func marshalOpts(opts ...SetOption) []byte {
+func marshalOpts(opts ...WOption) []byte {
 	if len(opts) == 0 {
 		return nil
 	}
@@ -141,339 +408,6 @@ func marshalOpts(opts ...SetOption) []byte {
 		bb = bb[unix.CmsgSpace(int(o.Len())):]
 	}
 	return b
-}
-
-type TTL uint8
-
-func (o TTL) Level() int32 {
-	return unix.SOL_IP
-}
-
-func (o TTL) Type() int32 {
-	return unix.IP_TTL
-}
-
-func (o TTL) Len() uint64 {
-	return uint64(unsafe.Sizeof(uint32(o)))
-}
-
-func (o TTL) Marshal(b []byte) {
-	*(*uint32)(unsafe.Pointer(&b[0])) = uint32(o)
-}
-
-func (o *TTL) Unmarshal(b []byte) {
-	*o = TTL(*(*uint32)(unsafe.Pointer(&b[0])))
-}
-
-func marshalBoolAsInt32(b []byte, v bool) {
-	*(*int32)(unsafe.Pointer(&b[0])) = b2i(v)
-}
-
-func unmarshalBoolFromInt32(b []byte) bool {
-	return i2b(*(*int32)(unsafe.Pointer(&b[0])))
-}
-
-type recvTTL bool
-
-func (o recvTTL) Level() int32 {
-	return unix.SOL_IP
-}
-
-func (o recvTTL) Type() int32 {
-	return unix.IP_RECVTTL
-}
-
-func (o recvTTL) Len() uint64 {
-	return uint64(unsafe.Sizeof(int32(0)))
-}
-
-func (o recvTTL) Marshal(b []byte) {
-	marshalBoolAsInt32(b, bool(o))
-}
-
-func (o *recvTTL) Unmarshal(b []byte) {
-	*o = recvTTL(unmarshalBoolFromInt32(b))
-}
-
-type HopLimit uint8
-
-func (o HopLimit) Level() int32 {
-	return unix.SOL_IPV6
-}
-
-func (o HopLimit) Type() int32 {
-	return unix.IPV6_HOPLIMIT
-}
-
-func (o HopLimit) Len() uint64 {
-	return uint64(unsafe.Sizeof(uint32(o)))
-}
-
-func (o HopLimit) Marshal(b []byte) {
-	*(*uint32)(unsafe.Pointer(&b[0])) = uint32(o)
-}
-
-func (o *HopLimit) Unmarshal(b []byte) {
-	*o = HopLimit(*(*uint32)(unsafe.Pointer(&b[0])))
-}
-
-type recvHopLimit bool
-
-func (o recvHopLimit) Level() int32 {
-	return unix.SOL_IPV6
-}
-
-func (o recvHopLimit) Type() int32 {
-	return unix.IPV6_RECVHOPLIMIT
-}
-
-func (o recvHopLimit) Len() uint64 {
-	return uint64(unsafe.Sizeof(int32(0)))
-}
-
-func (o recvHopLimit) Marshal(b []byte) {
-	marshalBoolAsInt32(b, bool(o))
-}
-
-func (o *recvHopLimit) Unmarshal(b []byte) {
-	*o = recvHopLimit(unmarshalBoolFromInt32(b))
-}
-
-type PktInfo struct {
-	Src, Dst net.IP
-	IfIndex  int32
-}
-
-func (o *PktInfo) Level() int32 {
-	return unix.SOL_IP
-}
-
-func (o *PktInfo) Type() int32 {
-	return unix.IP_PKTINFO
-}
-
-func (o *PktInfo) Len() uint64 {
-	return unix.SizeofInet4Pktinfo
-}
-
-func (o *PktInfo) Marshal(b []byte) {
-	pi := (*unix.Inet4Pktinfo)(unsafe.Pointer(&b[0]))
-	if ip := o.Src.To4(); ip != nil {
-		copy(pi.Spec_dst[:], ip)
-	}
-	if o.IfIndex > 0 {
-		pi.Ifindex = o.IfIndex
-	}
-}
-
-func (o *PktInfo) Unmarshal(b []byte) {
-	pi := (*unix.Inet4Pktinfo)(unsafe.Pointer(&b[0]))
-	o.IfIndex = pi.Ifindex
-	if len(o.Dst) < net.IPv4len {
-		o.Dst = make(net.IP, net.IPv4len)
-	}
-	copy(o.Dst, pi.Addr[:])
-}
-
-type PktInfo6 struct {
-	Src, Dst net.IP
-	IfIndex  uint32
-}
-
-func (o *PktInfo6) Level() int32 {
-	return unix.SOL_IPV6
-}
-
-func (o *PktInfo6) Type() int32 {
-	return unix.IPV6_PKTINFO
-}
-
-func (o *PktInfo6) Len() uint64 {
-	return unix.SizeofInet6Pktinfo
-}
-
-func (o *PktInfo6) Marshal(b []byte) {
-	pi := (*unix.Inet6Pktinfo)(unsafe.Pointer(&b[0]))
-	if ip := o.Src.To16(); ip != nil && ip.To4() == nil {
-		copy(pi.Addr[:], ip)
-	}
-	if o.IfIndex > 0 {
-		pi.Ifindex = o.IfIndex
-	}
-}
-
-func (o *PktInfo6) Unmarshal(b []byte) {
-	pi := (*unix.Inet6Pktinfo)(unsafe.Pointer(&b[0]))
-	o.IfIndex = pi.Ifindex
-	if len(o.Dst) < net.IPv6len {
-		o.Dst = make(net.IP, net.IPv6len)
-	}
-	copy(o.Dst, pi.Addr[:])
-}
-
-type TrafficClass uint8
-
-func (o TrafficClass) Level() int32 {
-	return unix.SOL_IPV6
-}
-
-func (o TrafficClass) Type() int32 {
-	return unix.IPV6_TCLASS
-}
-
-func (o TrafficClass) Len() uint64 {
-	return uint64(unsafe.Sizeof(uint32(o)))
-}
-
-func (o TrafficClass) Marshal(b []byte) {
-	*(*uint32)(unsafe.Pointer(&b[0])) = uint32(o)
-}
-
-func (o *TrafficClass) Unmarshal(b []byte) {
-	*o = TrafficClass(*(*uint32)(unsafe.Pointer(&b[0])))
-}
-
-type PathMTU struct {
-	MTU     uint32
-	Dst     net.IP
-	IfIndex uint32
-}
-
-func (o *PathMTU) Level() int32 {
-	return unix.SOL_IPV6
-}
-
-func (o *PathMTU) Type() int32 {
-	return unix.IPV6_PATHMTU
-}
-
-func (o *PathMTU) Len() uint64 {
-	return unix.SizeofIPv6MTUInfo
-}
-
-func (o *PathMTU) Marshal(b []byte) {
-	(*unix.IPv6MTUInfo)(unsafe.Pointer(&b[0])).Mtu = uint32(o.MTU)
-}
-
-func (o *PathMTU) Unmarshal(b []byte) {
-	mi := (*unix.IPv6MTUInfo)(unsafe.Pointer(&b[0]))
-	if len(o.Dst) < net.IPv6len {
-		o.Dst = make(net.IP, net.IPv6len)
-	}
-	copy(o.Dst, mi.Addr.Addr[:])
-	o.IfIndex = mi.Addr.Scope_id
-	o.MTU = mi.Mtu
-}
-
-type Mark int32
-
-func (o Mark) Level() int32 {
-	return unix.SOL_SOCKET
-}
-
-func (o Mark) Type() int32 {
-	return unix.SO_MARK
-}
-
-func (o Mark) Len() uint64 {
-	return uint64(unsafe.Sizeof(o))
-}
-
-func (o Mark) Marshal(b []byte) {
-	*(*Mark)(unsafe.Pointer(&b[0])) = o
-}
-
-func (o *Mark) Unmarshal(b []byte) {
-	*o = *(*Mark)(unsafe.Pointer(&b[0]))
-}
-
-type recvErr bool
-
-func (o recvErr) Level() int32 {
-	return unix.SOL_IP
-}
-
-func (o recvErr) Type() int32 {
-	return unix.IP_RECVERR
-}
-
-func (o recvErr) Len() uint64 {
-	return uint64(unsafe.Sizeof(int32(0)))
-}
-
-func (o recvErr) Marshal(b []byte) {
-	marshalBoolAsInt32(b, bool(o))
-}
-
-func (o *recvErr) Unmarshal(b []byte) {
-	*o = recvErr(unmarshalBoolFromInt32(b))
-}
-
-type recvErr6 bool
-
-func (o recvErr6) Level() int32 {
-	return unix.SOL_IPV6
-}
-
-func (o recvErr6) Type() int32 {
-	return unix.IPV6_RECVERR
-}
-
-func (o recvErr6) Len() uint64 {
-	return uint64(unsafe.Sizeof(int32(0)))
-}
-
-func (o recvErr6) Marshal(b []byte) {
-	marshalBoolAsInt32(b, bool(o))
-}
-
-func (o *recvErr6) Unmarshal(b []byte) {
-	*o = recvErr6(unmarshalBoolFromInt32(b))
-}
-
-type timestampNs bool
-
-func (o timestampNs) Level() int32 {
-	return unix.SOL_SOCKET
-}
-
-func (o timestampNs) Type() int32 {
-	return unix.SO_TIMESTAMPNS_NEW
-}
-
-func (o timestampNs) Len() uint64 {
-	return uint64(unsafe.Sizeof(int32(0)))
-}
-
-func (o timestampNs) Marshal(b []byte) {
-	*(*int32)(unsafe.Pointer(&b[0])) = b2i(bool(o))
-}
-
-func (o *timestampNs) Unmarshal(b []byte) {
-	*o = timestampNs(i2b(*(*int32)(unsafe.Pointer(&b[0]))))
-}
-
-type timestamping int32
-
-func (o timestamping) Level() int32 {
-	return unix.SOL_SOCKET
-}
-
-func (o timestamping) Type() int32 {
-	// TODO: OLD?
-	return unix.SO_TIMESTAMPING_NEW
-}
-
-func (o timestamping) Len() uint64 {
-	return uint64(unsafe.Sizeof(int32(0)))
-}
-
-func (o timestamping) Marshal(b []byte) {
-	*(*int32)(unsafe.Pointer(&b[0])) = int32(o)
-}
-
-func (o *timestamping) Unmarshal(b []byte) {
-	*o = timestamping(*(*int32)(unsafe.Pointer(&b[0])))
 }
 
 func b2i(b bool) int32 {

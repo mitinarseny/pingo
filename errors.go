@@ -5,8 +5,6 @@ import (
 	"net"
 )
 
-var icmpError ICMPError
-
 type ICMPError interface {
 	error
 	From() net.IP
