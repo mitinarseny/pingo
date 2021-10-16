@@ -46,5 +46,6 @@ func ExamplePinger_Get() {
 	if err := p.Get(ttl); err != nil {
 		log.Panic(err)
 	}
-	fmt.Println(ttl)
+	fmt.Println(ttl.Get())
+	// Output: 64
 }
