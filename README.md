@@ -7,8 +7,10 @@ Fast and lightweight ping library for Golang with multi-host support.
 * [ICMP sockets](https://lwn.net/Articles/420800):
   * UDP port 0 means "let the kernel pick a free number"
   * ICMP Echo Message ID is UDP port, so multiple instances of Pinger do not collide
-* Support for custom socket and per-packet options
-* Kernel timestamps with [SO_TIMESTAMPING](https://www.kernel.org/doc/Documentation/networking/timestamping.txt)
+* Support for custom [setsockopt(2)](https://man7.org/linux/man-pages/man2/getsockopt.2.html)
+  and [sendmsg(2)](https://man7.org/linux/man-pages/man2/sendmsg.2.html) options
+* Support for Linux kernel RX and TX timestamps with
+  [SO_TIMESTAMPING](https://www.kernel.org/doc/Documentation/networking/timestamping.txt)
 * IPv4 and IPv6 support
 * ICMP sequence numbers manager (no random): O(1) time, 256kB of memory
 * [Context](https://pkg.go.dev/context) awareness
