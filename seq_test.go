@@ -9,7 +9,7 @@ import (
 func BenchmarkReserve(b *testing.B) {
 	r := newReserve()
 	ctx := context.Background()
-	b.SetParallelism(2*math.MaxUint16)
+	b.SetParallelism(2 * math.MaxUint16)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			seq, err := r.get(ctx)

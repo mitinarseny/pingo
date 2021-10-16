@@ -67,7 +67,7 @@ func BenchmarkPinger(b *testing.B) {
 	g.Go(func() error {
 		return p.Listen(ctx)
 	})
-	defer func(){
+	defer func() {
 		cancel()
 		if err := g.Wait(); !errors.Is(err, context.Canceled) {
 			b.Fatal(err)
@@ -203,5 +203,6 @@ func ExamplePinger_PingNContextInterval() {
 		fmt.Println(err)
 		return
 	}
-	fmt.Printf("packet loss: %f, avg RTT: %s\n", float32(send-len(rs))/float32(send), rs.AvgRTT())
+	fmt.Printf("packet loss: %.2f%%, avg RTT: %s\n",
+		100*float32(send-len(rs))/float32(send), rs.AvgRTT())
 }

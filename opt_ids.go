@@ -9,8 +9,8 @@ import (
 // with corresponding ICMP sequence numbers.
 type optIDs struct {
 	counter uint32
-	m map[uint32]uint16
-	mu sync.RWMutex
+	m       map[uint32]uint16
+	mu      sync.RWMutex
 }
 
 func newOptIDs() *optIDs {
