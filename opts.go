@@ -8,21 +8,28 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Option is a socket option
 type Option interface {
 	Level() int32
 	Type() int32
+	// Len returns length of option value in bytes
 	Len() uint64
 }
 
 // ROption is a read getsockopt option
 type ROption interface {
 	Option
+	// Unmarshal decodes option from given buffer.
+	// If length of given buffer is less than Len(),
+	// it should not panic if possible
 	Unmarshal([]byte)
 }
 
 // WOption is a write setsockopt option
 type WOption interface {
 	Option
+	// Marshal encodes option to the given buffer.
+	// Length of given buffer should be not less than Len()
 	Marshal([]byte)
 }
 
@@ -30,6 +37,64 @@ type WOption interface {
 type RWOption interface {
 	ROption
 	WOption
+}
+
+// Set sets given options on the underlying socket with setsockopt(2)
+func (p *Pinger) Set(opts ...WOption) error {
+	var operr error
+	if err := p.rc.Control(func(fd uintptr) {
+		for _, o := range opts {
+			b := make([]byte, o.Len())
+			o.Marshal(b)
+			if operr = unix.SetsockoptString(int(fd), int(o.Level()),
+				int(o.Type()), string(b)); operr != nil {
+				break
+			}
+
+		}
+	}); err != nil {
+		return err
+	}
+	return os.NewSyscallError("setsockopt", operr)
+}
+
+// Get gets given options from the underlying socket with getsockopt(2)
+func (p *Pinger) Get(opts ...ROption) error {
+	var operr error
+	if err := p.rc.Control(func(fd uintptr) {
+		for _, o := range opts {
+			var s string
+			s, operr = unix.GetsockoptString(int(fd), int(o.Level()), int(o.Type()))
+			if operr != nil {
+				break
+			}
+			o.Unmarshal([]byte(s))
+		}
+	}); err != nil {
+		return err
+	}
+	return os.NewSyscallError("getsockopt", operr)
+}
+
+func marshalOpts(opts ...WOption) []byte {
+	if len(opts) == 0 {
+		return nil
+	}
+	var l int
+	for _, o := range opts {
+		l += unix.CmsgSpace(int(o.Len()))
+	}
+	b := make([]byte, l)
+	bb := b
+	for _, o := range opts {
+		h := (*unix.Cmsghdr)(unsafe.Pointer(&bb[0]))
+		h.Level = o.Level()
+		h.Type = o.Type()
+		h.Len = uint64(unix.CmsgLen(int(o.Len())))
+		o.Marshal(bb[unix.CmsgLen(0):h.Len])
+		bb = bb[unix.CmsgSpace(int(o.Len())):]
+	}
+	return b
 }
 
 type opt struct {
@@ -64,11 +129,6 @@ func (o *opt) Value() unsafe.Pointer {
 	return o.p
 }
 
-func (o *opt) set(length uintptr, p unsafe.Pointer) {
-	o.length = length
-	o.p = p
-}
-
 func (o *opt) Marshal(b []byte) {
 	if len(b) < int(o.length) {
 		panic(fmt.Errorf("marshal to buffer of insufficient length: %d, want: %d",
@@ -81,9 +141,10 @@ func (o *opt) Unmarshal(b []byte) {
 	copyP(o.p, unsafe.Pointer(&b[0]), min(uintptr(len(b)), o.length))
 }
 
+// copyP copies l bytes from [src, src + l) to [dst, dst + l)
 func copyP(dst, src unsafe.Pointer, l uintptr) {
 	var s uintptr
-	for {
+	for l > 0 {
 		if l >= unsafe.Sizeof(uint64(0)) {
 			s = unsafe.Sizeof(uint64(0))
 			*(*uint64)(dst) = *(*uint64)(src)
@@ -93,11 +154,9 @@ func copyP(dst, src unsafe.Pointer, l uintptr) {
 		} else if l >= unsafe.Sizeof(uint16(0)) {
 			s = unsafe.Sizeof(uint16(0))
 			*(*uint16)(dst) = *(*uint16)(src)
-		} else if l >= unsafe.Sizeof(uint8(0)) {
+		} else {
 			s = unsafe.Sizeof(uint8(0))
 			*(*uint8)(dst) = *(*uint8)(src)
-		} else {
-			break
 		}
 		l -= s
 		dst, src = unsafe.Pointer(uintptr(dst)+s), unsafe.Pointer(uintptr(src)+s)
@@ -149,16 +208,16 @@ type int8Opt struct {
 }
 
 func NewInt8Option(lvl, typ int32) Int8Option {
-	v := new(int8)
+	v := new(int32)
 	return int8Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
 }
 
 func (o int8Opt) Get() int8 {
-	return *(*int8)(o.Value())
+	return int8(*(*int32)(o.Value()))
 }
 
 func (o int8Opt) Set(v int8) Int8Option {
-	*(*int8)(o.Value()) = v
+	*(*int32)(o.Value()) = int32(v)
 	return o
 }
 
@@ -173,16 +232,16 @@ type Uint8Option interface {
 }
 
 func NewUint8Option(lvl, typ int32) Uint8Option {
-	v := new(uint8)
+	v := new(uint32)
 	return uint8Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
 }
 
 func (o uint8Opt) Get() uint8 {
-	return *(*uint8)(o.Value())
+	return uint8(*(*uint32)(o.Value()))
 }
 
 func (o uint8Opt) Set(v uint8) Uint8Option {
-	*(*uint8)(o.Value()) = v
+	*(*uint32)(o.Value()) = uint32(v)
 	return o
 }
 
@@ -197,16 +256,16 @@ type int16Opt struct {
 }
 
 func NewInt16Option(lvl, typ int32) Int16Option {
-	v := new(int16)
+	v := new(int32)
 	return int16Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
 }
 
 func (o int16Opt) Get() int16 {
-	return *(*int16)(o.Value())
+	return int16(*(*int32)(o.Value()))
 }
 
 func (o int16Opt) Set(v int16) Int16Option {
-	*(*int16)(o.Value()) = v
+	*(*int32)(o.Value()) = int32(v)
 	return o
 }
 
@@ -221,16 +280,16 @@ type uint16Opt struct {
 }
 
 func NewUint16Option(lvl, typ int32) Uint16Option {
-	v := new(uint16)
+	v := new(uint32)
 	return uint16Opt{NewOption(lvl, typ, unsafe.Sizeof(*v), unsafe.Pointer(v))}
 }
 
 func (o uint16Opt) Get() uint16 {
-	return *(*uint16)(o.Value())
+	return uint16(*(*uint32)(o.Value()))
 }
 
 func (o uint16Opt) Set(v uint16) Uint16Option {
-	*(*uint16)(o.Value()) = v
+	*(*uint32)(o.Value()) = uint32(v)
 	return o
 }
 
@@ -330,93 +389,55 @@ func (o uint64Opt) Set(v uint64) Uint64Option {
 	return o
 }
 
-type bytesOpt struct {
-	*opt
-	v []byte
+type BytesOption interface {
+	RWOption
+	Get() []byte
+	Set([]byte) BytesOption
 }
 
-func NewBytesOption(lvl, typ int32, v []byte) *bytesOpt {
+type bytesOpt struct {
+	lvl int32
+	typ int32
+	v   []byte
+}
+
+func NewBytesOption(lvl, typ int32, v []byte) BytesOption {
 	return &bytesOpt{
-		opt: NewOption(lvl, typ, uintptr(len(v)), unsafe.Pointer(&v[0])),
+		lvl: lvl,
+		typ: typ,
 		v:   v,
 	}
+}
+
+func (o *bytesOpt) Level() int32 {
+	return o.lvl
+}
+
+func (o *bytesOpt) Type() int32 {
+	return o.typ
+}
+
+func (o *bytesOpt) Len() uint64 {
+	return uint64(len(o.v))
 }
 
 func (o *bytesOpt) Get() []byte {
 	return o.v
 }
 
-func (o *bytesOpt) Set(v []byte) *bytesOpt {
-	o.opt.set(uintptr(len(v)), unsafe.Pointer(&v[0]))
+func (o *bytesOpt) Set(v []byte) BytesOption {
 	o.v = v
 	return o
 }
 
-// Set sets given options on the underlying socket with setsockopt(2)
-func (p *Pinger) Set(opts ...WOption) error {
-	var operr error
-	if err := p.rc.Control(func(fd uintptr) {
-		for _, o := range opts {
-			b := make([]byte, o.Len())
-			o.Marshal(b)
-			if operr = unix.SetsockoptString(int(fd), int(o.Level()),
-				int(o.Type()), string(b)); operr != nil {
-				break
-			}
-
-		}
-	}); err != nil {
-		return err
+func (o *bytesOpt) Marshal(b []byte) {
+	if len(b) < len(o.v) {
+		panic(fmt.Errorf("marshal to buffer of insufficient length: %d, want: %d",
+			len(b), len(o.v)))
 	}
-	return os.NewSyscallError("setsockopt", operr)
+	copy(b, o.v)
 }
 
-// Get gets given options from the underlying socket with getsockopt(2)
-func (p *Pinger) Get(opts ...ROption) error {
-	var operr error
-	if err := p.rc.Control(func(fd uintptr) {
-		for _, o := range opts {
-			var s string
-			s, operr = unix.GetsockoptString(int(fd), int(o.Level()), int(o.Type()))
-			if operr != nil {
-				break
-			}
-			o.Unmarshal([]byte(s))
-		}
-	}); err != nil {
-		return err
-	}
-	return os.NewSyscallError("getsockopt", operr)
-}
-
-func marshalOpts(opts ...WOption) []byte {
-	if len(opts) == 0 {
-		return nil
-	}
-	var l int
-	for _, o := range opts {
-		l += unix.CmsgSpace(int(o.Len()))
-	}
-	b := make([]byte, l)
-	bb := b
-	for _, o := range opts {
-		h := (*unix.Cmsghdr)(unsafe.Pointer(&bb[0]))
-		h.Level = o.Level()
-		h.Type = o.Type()
-		h.Len = uint64(unix.CmsgLen(int(o.Len())))
-		o.Marshal(bb[unix.CmsgLen(0):h.Len])
-		bb = bb[unix.CmsgSpace(int(o.Len())):]
-	}
-	return b
-}
-
-func b2i(b bool) int32 {
-	if b {
-		return 1
-	}
-	return 0
-}
-
-func i2b(i int32) bool {
-	return i != 0
+func (o *bytesOpt) Unmarshal(b []byte) {
+	copy(o.v, b)
 }

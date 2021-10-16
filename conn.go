@@ -1,27 +1,23 @@
 package ping
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 	"unsafe"
 
 	"net"
 	"os"
 
+	unixx "github.com/mitinarseny/pingo/unix"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 )
 
-// newConn returns a new udp connection with given local and destination addresses.
-// laddr should be a valid IP address, while dst could be nil.
-// Non-nil dst means that ICMP packets could be sent to and received from
-// only given address, pinging different address would result in error.
-func newConn(family, proto int, laddr *net.UDPAddr, dst net.IP) (conn net.PacketConn, err error) {
+// newConn returns a new udp connection with given local address.
+func newConn(family, proto int, laddr *net.UDPAddr) (conn net.PacketConn, err error) {
 	s, err := unix.Socket(family, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, proto)
 	if err != nil {
 		return nil, os.NewSyscallError("socket", err)
@@ -30,13 +26,6 @@ func newConn(family, proto int, laddr *net.UDPAddr, dst net.IP) (conn net.Packet
 	if err := unix.Bind(s, sockaddr(laddr)); err != nil {
 		unix.Close(s)
 		return nil, os.NewSyscallError("bind", err)
-	}
-
-	if dst != nil {
-		if err := unix.Connect(s, sockaddr(&net.UDPAddr{IP: dst})); err != nil {
-			unix.Close(s)
-			return nil, os.NewSyscallError("connect", err)
-		}
 	}
 
 	f := os.NewFile(uintptr(s), "datagram-oriented icmp")
@@ -97,94 +86,81 @@ func (p *Pinger) sendSeq(seq uint16, dst net.IP, payload []byte, opts ...WOption
 	return os.NewSyscallError("sendmsg", operr)
 }
 
-// Listen handles receiving of incomming replies and routes them into calling
-// Pinger.Ping* method, so *no* Pinger.Ping*() methods should be called before
-// Listen and after it returns.
-//
-// msgBuffSize is a size of buffer for socket messages for receiving incoming packets.
-// maxPayloadSize is a maximum size of ICMP payload to receive.
-//
-// NOTE: It is a blocking call, so it should be run as a separate goroutine.
-// It returns a non-nil error if context is done or an error occured
-// while receiving on sokcet.
-func (p *Pinger) Listen(ctx context.Context) error {
-	if err := p.rUnlock(); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	var g sync.WaitGroup
-	defer g.Wait()
-	g.Add(1)
-	go func() {
-		defer g.Done()
-
-		<-ctx.Done()
-		_ = p.rLock()
-	}()
-	defer cancel()
-
-	err := p.read()
-	if errors.Is(err, os.ErrDeadlineExceeded) {
-		err = ctx.Err()
-	}
-	return err
+type sockMsg struct {
+	buff, oob []byte
 }
 
-const (
-	sizeOfICMPEchoHeader = unsafe.Sizeof(struct {
-		typ      uint8
-		code     uint8
-		checksum uint16
-		echo     struct {
-			id  uint16
-			seq uint16
-		}
-	}{})
-)
+// read reads messgaes from underlying socket and its error queue
+// and sends them to channel.
+// numMsgs is the number of mmsghdrs to create.
+func (p *Pinger) read(ch chan<- sockMsg, numMsgs int) error {
+	const mtu = 1500
 
-func (p *Pinger) read() error {
-	buff := make([]byte, p.mtu-int32(sizeOfICMPEchoHeader))
-	oob := make([]byte, unix.CmsgSpace(int(unsafe.Sizeof(unix.ScmTimestamping{})))+
-		unix.CmsgSpace(int(TTL(0).Len())))
-	errQueueBuff := make([]byte, sizeOfICMPEchoHeader) // we are not interested in ICMP payload
-	errQueueOOB := make([]byte, len(oob)+
-		unix.CmsgSpace(int(unsafe.Sizeof(unix.SockExtendedErr{})+
-			unsafe.Sizeof(unix.RawSockaddrInet6{}))))
+	oobSize := unix.CmsgSpace(int(unsafe.Sizeof(unix.ScmTimestamping{}))) +
+		unix.CmsgSpace(int(TTL(0).Len()))
+	buffs, oobs, hs := makeMmsghdrs(numMsgs, mtu, oobSize)
+	errQueueBuffs, errQueueOOBs, errQueueHs := makeMmsghdrs(numMsgs,
+		mtu, oobSize+unix.CmsgSpace(
+			int(unsafe.Sizeof(unix.SockExtendedErr{})+unix.SizeofSockaddrAny)))
+
+	sendAndReset := func(hs []unixx.Mmsghdr, buffs [][]byte, oobs [][]byte) {
+		for i := range hs {
+			ch <- sockMsg{
+				// copy buffers
+				buff: append([]byte(nil), buffs[i][:hs[i].Len]...),
+				oob:  append([]byte(nil), oobs[i][:hs[i].Hdr.Controllen]...),
+			}
+
+			// we need to reset control length to original oob length
+			// since it was changed by recvmmsg(2).
+			hs[i].Hdr.SetControllen(len(oobs[i]))
+		}
+	}
 
 	var (
-		n, oobn, errQueueN, errQueueOOBN int
-		operr, errQueueOperr             error
+		n, errQueueN         int
+		operr, errQueueOperr error
 	)
 	for {
 		if err := p.rc.Read(func(s uintptr) (done bool) {
-			// TODO: recvmmsg
-			n, oobn, _, _, operr = unix.Recvmsg(int(s), buff, oob, unix.MSG_DONTWAIT)
-			errQueueN, errQueueOOBN, _, _, errQueueOperr = unix.Recvmsg(
-				int(s), errQueueBuff, errQueueOOB, unix.MSG_ERRQUEUE|unix.MSG_DONTWAIT)
+			// Call recvmmsg for both socket and its error queue since
+			// syscall.RawConn.Read() locks socket for reading.
+			//
+			// Raw syscalls recvmmsg(2) in conjuction with epoll_wait(2) without
+			// syscall.RawConn wrapper wouldn't be the best choice since
+			// syscall.RawConn uses internal/poll.FD, which internally uses
+			// runtime_pollWait, which makes current thread available for others
+			// goroutines while waiting for data to receive.
+			// Golang restrics usage of internal/ packages, so it is the only way
+			// to avoid locking current OS thread by this goroutine.
+			n, operr = unixx.Recvmmsg(s, hs, unix.MSG_DONTWAIT)
+			errQueueN, errQueueOperr = unixx.Recvmmsg(s, errQueueHs, unix.MSG_ERRQUEUE|unix.MSG_DONTWAIT)
+			// we are done as soon as at least one of operrs does not
+			// denote blocking operation.
 			return !(errIsWouldBlockOr(operr) && errIsWouldBlockOr(errQueueOperr))
 		}); err != nil {
 			return err
 		}
-		// TODO: copy buffs
+
+		// process data from the error queue first since it may contain transmit timestamps
 		if errQueueOperr == nil {
-			scms, err := unix.ParseSocketControlMessage(errQueueOOB[:errQueueOOBN])
-			if err != nil {
-				return fmt.Errorf("parse socket control messages: %w", err)
-			}
-			p.dispatch(errQueueBuff[:errQueueN], scms)
+			sendAndReset(errQueueHs[:errQueueN],
+				errQueueBuffs[:errQueueN], errQueueOOBs[:errQueueN])
 		} else if !errIsWouldBlockOr(errQueueOperr) {
-			return os.NewSyscallError("recvmsg", errQueueOperr)
+			return os.NewSyscallError("recvmmsg", errQueueOperr)
 		}
 
 		if operr == nil {
-			scms, err := unix.ParseSocketControlMessage(oob[:oobn])
-			if err != nil {
-				return fmt.Errorf("parse socket control messages: %w", err)
-			}
-			p.dispatch(buff[:n], scms)
+			sendAndReset(hs[:n], buffs[:n], oobs[:n])
 		} else if !errIsWouldBlockOr(operr, unix.EHOSTUNREACH) {
-			return os.NewSyscallError("recvmsg", operr)
+			return os.NewSyscallError("recvmmsg", operr)
 		}
+	}
+}
+
+func (p *Pinger) dispatcher(ch <-chan sockMsg) {
+	for m := range ch {
+		p.dispatch(m.buff, m.oob)
 	}
 }
 
@@ -192,7 +168,11 @@ func (p *Pinger) read() error {
 //   * ICMP reply or ICMP error from given recvmsg(2) buffer and
 //     socket control messages and dispatches them to the sender
 //   * transmit timestamp and updates corresponding pending request
-func (p *Pinger) dispatch(buff []byte, scms []unix.SocketControlMessage) {
+func (p *Pinger) dispatch(buff, oob []byte) {
+	scms, err := unix.ParseSocketControlMessage(oob)
+	if err != nil {
+		return
+	}
 	var (
 		icmpErr       ICMPError
 		ttl           uint8
@@ -239,10 +219,14 @@ func (p *Pinger) dispatch(buff []byte, scms []unix.SocketControlMessage) {
 						icmpErr = NewTimeExceededError(sa.Addr[:])
 					}
 				}
-			case unix.IP_TTL, unix.IPV6_HOPLIMIT:
+			case unix.IP_TTL:
 				ttlOpt := TTL(0)
 				ttlOpt.Unmarshal(scm.Data)
 				ttl = ttlOpt.Get()
+			case unix.IPV6_HOPLIMIT:
+				hlOpt := HopLimit(0)
+				hlOpt.Unmarshal(scm.Data)
+				ttl = hlOpt.Get()
 			}
 		case unix.SOL_SOCKET:
 			switch scm.Header.Type {
@@ -251,10 +235,12 @@ func (p *Pinger) dispatch(buff []byte, scms []unix.SocketControlMessage) {
 			}
 		}
 	}
+
 	if isTxTimestamp {
 		p.seqs.sentAt(p.optIDs.pop(optID), ts)
 		return
 	}
+
 	msg, err := icmp.ParseMessage(p.proto, buff)
 	if err != nil {
 		return

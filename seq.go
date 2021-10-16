@@ -2,7 +2,6 @@ package ping
 
 import (
 	"context"
-	"math"
 	"sync"
 	"time"
 )
@@ -21,10 +20,10 @@ type pending struct {
 
 // sequences associates ICMP sequence numbers with pending requests
 type sequences struct {
+	r reserve
+
 	m  map[uint16]*pending
 	mu sync.RWMutex
-
-	r *reserve
 }
 
 func newSequences() *sequences {
@@ -110,43 +109,10 @@ func (s *sequences) free(seq uint16) *pending {
 	return p
 }
 
-// reserve stores unique uint16 sequence 
-type reserve struct {
-	toFree chan<- uint16
-	freed  <-chan uint16
-}
+// reserve stores unique uint16 numbers
+type reserve chan uint16
 
-func newReserve() *reserve {
-	toFree, freed := makeReserveCh()
-	return &reserve{
-		toFree: toFree,
-		freed:  freed,
-	}
-}
-
-// close frees resources allocated for reserve
-func (r *reserve) close() {
-	close(r.toFree)
-}
-
-// get allocates unique uint16 unless ctx is done. The returned number should
-// then be freed with reserve.free() to make it availbale for future usage.
-func (r *reserve) get(ctx context.Context) (uint16, error) {
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case id := <-r.freed:
-		return id, nil
-	}
-}
-
-// free pushes back given id, making it available to reserve.get() again.
-func (r *reserve) free(id uint16) {
-	r.toFree <- id
-}
-
-// TODO: doc
-func makeReserveCh() (chan<- uint16, <-chan uint16) {
+func newReserve() reserve {
 	ch := make(chan uint16, 1<<16)
 	for seq := uint16(0); ; seq++ {
 		ch <- seq
@@ -154,56 +120,28 @@ func makeReserveCh() (chan<- uint16, <-chan uint16) {
 			break
 		}
 	}
-	return ch, ch
+	return ch
 }
 
-// TODO: remove?
-// makeReserveCh creates FIFO with reserved values pushed to the read side
-// of the channel when there is actually no data to read. Values are taken
-// from range [min, max). Each of these values is pushed only once.
-// Read side of the channel is closed when all of values sent to the write
-// side of the channel had been received after the write side has been closed.
-func makeReserveCh1() (chan<- uint16, <-chan uint16) {
-	in, out := make(chan uint16), make(chan uint16)
-	var used uint16
-	go func() {
-		inQ := make([]uint16, 0, 1)
-		var (
-			outCh  chan<- uint16
-			curVal uint16
-		)
-		for in != nil || len(inQ) > 0 {
-			if len(inQ) == 0 && used < math.MaxUint16 {
-				inQ = append(inQ, used)
-				used++
-			}
-			if len(inQ) > 0 {
-				outCh = out
-				curVal = inQ[0]
-			} else {
-				outCh = nil
-			}
-			select {
-			case v, ok := <-in:
-				if !ok {
-					// send the rest to out and return
-					for _, v := range inQ {
-						out <- v
-					}
-					close(out)
-					return
-				}
-				select {
-				case out <- v:
-				default:
-					inQ = append(inQ, v)
-				}
-			case outCh <- curVal:
-				l := len(inQ)
-				inQ[0] = inQ[l-1]
-				inQ = inQ[:l-1]
-			}
-		}
-	}()
-	return in, out
+// close frees resources allocated for reserve
+func (r reserve) close() {
+	close(r)
+}
+
+// get allocates unique uint16 unless ctx is done. The returned number should
+// then be freed with reserve.free() to make it availbale for future usage.
+// Once get() returned a number, no other calls get() will return this number
+// until free() is called with the number.
+func (r reserve) get(ctx context.Context) (uint16, error) {
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case id := <-r:
+		return id, nil
+	}
+}
+
+// free pushes back given id, making it available to reserve.get() again.
+func (r reserve) free(id uint16) {
+	r <- id
 }

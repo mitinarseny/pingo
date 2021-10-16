@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,27 +17,20 @@ type Pinger struct {
 	c  net.PacketConn
 	rc syscall.RawConn
 
-	seqs *sequences
-
-	// TODO: optimize?
+	seqs   *sequences
 	optIDs *optIDs
 
-	// proto is unix.
+	// proto is unix.IPPROTO_ICMP(V6)
 	proto int
-
-	mtu int32
 }
 
-const defaultMTU = 1500
-
-// New creates a new Pinger with given local and destination addresses.
-// laddr should be a valid IP address, while dst could be nil.
-// Non-nil dst means that ICMP packets could be sent to and received from
-// only given address, pinging different address would result in error.
+// New creates a new Pinger with given local address to bind to.
+// If laddr is nil or laddr.IP is nil, then it will be bound to 0.0.0.0.
+// opts are setsockopt(2) options to set on the underlying socket.
 //
 // To enable receiving packets, Listen() should be called on returned Pinger.
 // Close() should be called after Listen() returns.
-func New(laddr *net.UDPAddr, dst net.IP, opts ...WOption) (p *Pinger, err error) {
+func New(laddr *net.UDPAddr, opts ...WOption) (p *Pinger, err error) {
 	if laddr == nil {
 		laddr = new(net.UDPAddr)
 	}
@@ -50,7 +44,7 @@ func New(laddr *net.UDPAddr, dst net.IP, opts ...WOption) (p *Pinger, err error)
 		family, proto = unix.AF_INET6, unix.IPPROTO_ICMPV6
 	}
 
-	c, err := newConn(family, proto, laddr, dst)
+	c, err := newConn(family, proto, laddr)
 	if err != nil {
 		return nil, err
 	}
@@ -71,45 +65,20 @@ func New(laddr *net.UDPAddr, dst net.IP, opts ...WOption) (p *Pinger, err error)
 		seqs:   newSequences(),
 		optIDs: newOptIDs(),
 		proto:  proto,
-		mtu:    defaultMTU,
 	}
 
-	if dst != nil {
-		// socket should be connected, get MTU
-		var mtu Int32Option
-		switch p.proto {
-		case unix.IPPROTO_ICMP:
-			mtu = MTU(0)
-		case unix.IPPROTO_ICMPV6:
-			mtu = MTU6(0)
-		}
-		if err := p.Get(mtu); err != nil {
-			return nil, fmt.Errorf("failed to get MTU: %w", err)
-		}
-		p.mtu = mtu.Get()
-	}
-
+	opts = append(opts, timestamping(unix.SOF_TIMESTAMPING_SOFTWARE|
+		unix.SOF_TIMESTAMPING_RX_SOFTWARE|
+		unix.SOF_TIMESTAMPING_TX_SCHED|
+		unix.SOF_TIMESTAMPING_OPT_CMSG|
+		unix.SOF_TIMESTAMPING_OPT_ID|
+		unix.SOF_TIMESTAMPING_OPT_TSONLY))
 	switch family {
 	case unix.AF_INET:
-		if err := p.Set(recvErr(true), recvTTL(true)); err != nil {
-			return nil, err
-		}
+		opts = append(opts, recvErr(true), recvTTL(true))
 	case unix.AF_INET6:
-		if err := p.Set(recvErr6(true), recvHopLimit(true)); err != nil {
-			return nil, err
-		}
+		opts = append(opts, recvErr6(true), recvHopLimit(true))
 	}
-
-	if err := p.Set(timestamping(
-		unix.SOF_TIMESTAMPING_RX_SOFTWARE |
-			unix.SOF_TIMESTAMPING_TX_SCHED |
-			unix.SOF_TIMESTAMPING_OPT_CMSG |
-			unix.SOF_TIMESTAMPING_OPT_ID |
-			unix.SOF_TIMESTAMPING_OPT_TSONLY |
-			unix.SOF_TIMESTAMPING_SOFTWARE)); err != nil {
-		return nil, err
-	}
-
 	if err := p.Set(opts...); err != nil {
 		return nil, err
 	}
@@ -125,6 +94,44 @@ func New(laddr *net.UDPAddr, dst net.IP, opts ...WOption) (p *Pinger, err error)
 // In particular, it closes the underlying socket.
 func (p *Pinger) Close() error {
 	return p.c.Close()
+}
+
+// Listen handles receiving of incomming replies and dispatches them into calling
+// Pinger.Ping* method, so *no* Pinger.Ping*() methods should be called before
+// Listen and after it returns.
+//
+// NOTE: It is a blocking call, so it should be run as a separate goroutine.
+// It returns a non-nil error if context is done or an error occured
+// while receiving on sokcet.
+func (p *Pinger) Listen(ctx context.Context) error {
+	if err := p.rUnlock(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	var g sync.WaitGroup
+	g.Add(1)
+	go func() {
+		defer g.Done()
+
+		<-ctx.Done()
+		_ = p.rLock()
+	}()
+	defer func() {
+		cancel()
+		g.Wait()
+	}()
+
+	const numMsgs = 100
+	ch := make(chan sockMsg, numMsgs)
+	defer close(ch)
+
+	go p.dispatcher(ch)
+
+	err := p.read(ch, numMsgs)
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		err = ctx.Err()
+	}
+	return err
 }
 
 // PingContextPayload sends one ICMP Echo Request to given destination with
