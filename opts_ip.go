@@ -7,22 +7,27 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// MTU is <SOL_IP, IP_MTU>
 func MTU(mtu int32) Int32Option {
 	return NewInt32Option(unix.SOL_IP, unix.IP_MTU)
 }
 
+// MTU6 is <SOL_IPV6, IPV6_MTU>
 func MTU6(mtu int32) Int32Option {
 	return NewInt32Option(unix.SOL_IPV6, unix.IPV6_MTU)
 }
 
+// TTL is <SOL_IP, IP_TTL>
 func TTL(ttl uint8) Uint8Option {
 	return NewUint8Option(unix.SOL_IP, unix.IP_TTL).Set(ttl)
 }
 
+// TTL is <SOL_IPV6, IPV6_HOPLIMIT>
 func HopLimit(hl uint8) Uint8Option {
 	return NewUint8Option(unix.SOL_IPV6, unix.IPV6_HOPLIMIT).Set(hl)
 }
 
+// PktInfo is <SOL_IP, IP_PKTINFO>
 type PktInfo struct {
 	Src, Dst net.IP
 	IfIndex  int32
@@ -59,6 +64,7 @@ func (o *PktInfo) Unmarshal(b []byte) {
 	copy(o.Dst, pi.Addr[:])
 }
 
+// PktInfo is <SOL_IPV6, IPV6_PKTINFO>
 type PktInfo6 struct {
 	Src, Dst net.IP
 	IfIndex  uint32
@@ -95,10 +101,12 @@ func (o *PktInfo6) Unmarshal(b []byte) {
 	copy(o.Dst, pi.Addr[:])
 }
 
+// TrafficClass is <SOL_IPV6, IPV6_TCLASS>
 func TrafficClass(tc uint8) Uint8Option {
 	return NewUint8Option(unix.SOL_IPV6, unix.IPV6_TCLASS)
 }
 
+// PathMTU is <SOL_IPV6, IPV6_PATHMTU>
 type PathMTU struct {
 	MTU     uint32
 	Dst     net.IP
@@ -131,18 +139,22 @@ func (o *PathMTU) Unmarshal(b []byte) {
 	o.MTU = mi.Mtu
 }
 
+// recvErr is <SOL_IP, IP_RECVERR>
 func recvErr(v bool) BoolOption {
 	return NewBoolOption(unix.SOL_IP, unix.IP_RECVERR).Set(v)
 }
 
+// recvErr6 is <SOL_IPV6, IPV6_RECVERR>
 func recvErr6(v bool) BoolOption {
 	return NewBoolOption(unix.SOL_IPV6, unix.IPV6_RECVERR).Set(v)
 }
 
+// recvTTL is <SOL_IP, IP_RECVTTL>
 func recvTTL(v bool) BoolOption {
 	return NewBoolOption(unix.SOL_IP, unix.IP_RECVTTL).Set(v)
 }
 
+// recvHopLimit is <SOL_IPV6, IPV6_RECVHOPLIMIT>
 func recvHopLimit(v bool) BoolOption {
 	return NewBoolOption(unix.SOL_IPV6, unix.IPV6_RECVHOPLIMIT).Set(v)
 }
