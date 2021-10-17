@@ -3,8 +3,8 @@ package ping
 import "golang.org/x/sys/unix"
 
 // Mark is <SOL_SOCKET, SO_MARK>
-func Mark(m int32) Int32Option {
-	return NewInt32Option(unix.SOL_SOCKET, unix.SO_MARK).Set(m)
+func Mark(m uint32) Uint32Option {
+	return NewUint32Option(unix.SOL_SOCKET, unix.SO_MARK).Set(m)
 }
 
 // timestampNs is <SOL_SOLKET, SO_TIMESTAMPNS>
