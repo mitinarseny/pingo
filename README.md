@@ -40,6 +40,7 @@ if err != nil {
 	fmt.Println(err)
 	return
 }
+defer p.Close()
 
 ctx, cancel := context.WithCancel(context.Background())
 var g errgroup.Group

@@ -90,6 +90,11 @@ func New(laddr *net.UDPAddr, opts ...WOption) (p *Pinger, err error) {
 	return p, nil
 }
 
+// IsIPv6 returns whether IPv6 is used, otherwise IPv4
+func (p *Pinger) IsIPv6() bool {
+	return p.proto == unix.IPPROTO_ICMPV6
+}
+
 // Close releases resources allocated for Pinger.
 // In particular, it closes the underlying socket.
 func (p *Pinger) Close() error {

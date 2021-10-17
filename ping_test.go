@@ -102,6 +102,7 @@ func Example_traceroute() {
 		fmt.Println(err)
 		return
 	}
+	defer p.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var g errgroup.Group
@@ -151,6 +152,7 @@ func ExamplePinger_PingContextPayload() {
 		fmt.Println(err)
 		return
 	}
+	defer p.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	var g errgroup.Group
@@ -184,6 +186,7 @@ func ExamplePinger_PingNContextInterval() {
 		fmt.Println(err)
 		return
 	}
+	defer p.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var g errgroup.Group

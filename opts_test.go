@@ -33,14 +33,13 @@ func TestNewOption(t *testing.T) {
 	require.Equal(t, val, i)
 }
 
-func ExamplePinger_setGet() {
-	p, err := New(nil)
+func ExamplePinger_set_get() {
+	p, err := New(nil, TTL(1))
 	if err != nil {
 		log.Panic(err)
 	}
-	if err := p.Set(TTL(1)); err != nil {
-		log.Panic(err)
-	}
+	defer p.Close()
+
 	ttl := TTL(0)
 	if err := p.Get(ttl); err != nil {
 		log.Panic(err)
