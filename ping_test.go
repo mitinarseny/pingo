@@ -47,7 +47,7 @@ func TestPinger(t *testing.T) {
 				*(*uint16)(unsafe.Pointer(&b[0])) = i
 				r, err := p.PingContextPayload(ctx, ipv4Loopback, b, ttl)
 				require.NoError(t, err)
-				require.NotZero(t, r.RTT)
+				require.Greater(t, r.RTT, time.Duration(0))
 				require.Equal(t, b, r.Data)
 			})
 		}
@@ -80,6 +80,9 @@ func BenchmarkPinger(b *testing.B) {
 			r, err := p.PingContext(ctx, ipv4Loopback)
 			if err != nil {
 				b.Fatal(err)
+			}
+			if r.RTT <= 0 {
+				b.Fatal("RTT is not positive")
 			}
 			sum += r.RTT
 		}
