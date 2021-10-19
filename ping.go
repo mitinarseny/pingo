@@ -139,11 +139,30 @@ func (p *Pinger) Listen(ctx context.Context) error {
 	return err
 }
 
+type Reply struct {
+	// RTT is a round trip time: the interval between sending
+	// an ICMP Echo Request and receiving ICMP Echo Reply.
+	RTT time.Duration
+
+	// TTL is time-to-live field from the recieved IP packet
+	TTL uint8
+
+	// Data is a reply payload
+	Data []byte
+
+	// Err is not nil if ICMP error was received.
+	// Other fields are valid even if Err is not nil.
+	Err ICMPError
+}
+
 // PingContextPayload sends one ICMP Echo Request to given destination with
 // given payload and waits for the reply until the given context is done.
-// On success, it returns the round trip time. Otherwise, it returns an error
-// occured while sending on underlying socket or ctx.Err()
 // opts can be used to set per-packet sendmsg(2) options
+//
+// On success, it returns the reply.
+// Otherwise, it returns an error occured while sending on underlying socket,
+// ctx.Err() or ICMPError. If the returned error is ICMPError, then the
+// returned Reply contains valid fields and has the same Err.
 func (p *Pinger) PingContextPayload(ctx context.Context, dst net.IP, payload []byte,
 	opts ...WOption) (Reply, error) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -165,8 +184,8 @@ func (p *Pinger) PingContextPayload(ctx context.Context, dst net.IP, payload []b
 	select {
 	case <-ctx.Done():
 		return Reply{}, ctx.Err()
-	case rep := <-ch:
-		return rep, nil
+	case r := <-ch:
+		return r, r.Err
 	}
 }
 
@@ -214,22 +233,6 @@ func (p *Pinger) PingPayloadTimeout(dst net.IP, payload []byte,
 // PingTimeout is like PingPayloadTimeout, but no payload.
 func (p *Pinger) PingTimeout(dst net.IP, timeout time.Duration, opts ...WOption) (Reply, error) {
 	return p.PingPayloadTimeout(dst, nil, timeout, opts...)
-}
-
-type Reply struct {
-	// RTT is a round trip time: the interval between sending
-	// an ICMP Echo Request and receiving ICMP Echo Reply.
-	RTT time.Duration
-
-	// TTL is time-to-live field from the recieved IP packet
-	TTL uint8
-
-	// Data is a reply payload
-	Data []byte
-
-	// Err is an error occurred while sending ICMP Echo Request
-	// or waiting for the reply
-	Err ICMPError
 }
 
 type Replies []Reply

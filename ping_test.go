@@ -47,7 +47,6 @@ func TestPinger(t *testing.T) {
 				*(*uint16)(unsafe.Pointer(&b[0])) = i
 				r, err := p.PingContextPayload(ctx, ipv4Loopback, b, ttl)
 				require.NoError(t, err)
-				require.NoError(t, r.Err)
 				require.NotZero(t, r.RTT)
 				require.Equal(t, b, r.Data)
 			})
@@ -80,9 +79,6 @@ func BenchmarkPinger(b *testing.B) {
 		for pb.Next() {
 			r, err := p.PingContext(ctx, ipv4Loopback)
 			if err != nil {
-				b.Fatal(err)
-			}
-			if r.Err != nil {
 				b.Fatal(err)
 			}
 			sum += r.RTT
@@ -119,27 +115,22 @@ func Example_traceroute() {
 	for ttl := uint8(1); ttl < math.MaxUint8-1; ttl++ {
 		fmt.Printf("%3d: ", ttl)
 		r, err := p.PingContextTimeout(ctx, dst, 1*time.Second, TTL(ttl))
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				// no answer from current hop
-				fmt.Println("...")
-				continue
-			}
-			fmt.Println(err)
-			return
+		if errors.Is(err, context.DeadlineExceeded) {
+			// no answer from current hop
+			fmt.Println("...")
+			continue
 		}
 		from := dst
-		if r.Err != nil {
-			from = r.Err.From()
-		}
-		fmt.Printf("%-15s %s\n", from, r.RTT)
-		switch r.Err.(type) {
-		case TimeExceededError:
-			continue
+		switch err := err.(type) {
 		case nil:
-			return
+		case TimeExceededError:
+			from = err.From()
 		default:
 			fmt.Println(err)
+			return
+		}
+		fmt.Printf("%-15s %s\n", from, r.RTT)
+		if err == nil {
 			return
 		}
 	}
@@ -169,15 +160,14 @@ func ExamplePinger_PingContextPayload() {
 
 	payload := "HELLO, ARE YOU THERE?"
 	r, err := p.PingContextPayload(ctx, net.IPv4(8, 8, 8, 8), []byte(payload))
-	if err != nil {
+	switch err.(type) {
+	case nil:
+		fmt.Printf("RTT: %s, TTL: %d, payload: %s\n", r.RTT, r.TTL, string(r.Data))
+	case ICMPError:
+		fmt.Printf("RTT: %s, TTL: %d, ICMP error: %s\n", r.RTT, r.TTL, err)
+	default:
 		fmt.Println(err)
-		return
 	}
-	if r.Err != nil {
-		fmt.Printf("RTT: %s, TTL: %d, ICMP error: %s\n", r.RTT, r.TTL, r.Err)
-		return
-	}
-	fmt.Printf("RTT: %s, TTL: %d, payload: %s\n", r.RTT, r.TTL, string(r.Data))
 }
 
 func ExamplePinger_PingNContextInterval() {
