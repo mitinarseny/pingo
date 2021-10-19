@@ -57,27 +57,22 @@ defer func() {
 for ttl := uint8(1); ttl < math.MaxUint8-1; ttl++ {
 	fmt.Printf("%3d: ", ttl)
 	r, err := p.PingContextTimeout(ctx, dst, 1*time.Second, TTL(ttl))
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			// no answer from current hop
-			fmt.Println("...")
-			continue
-		}
-		fmt.Println(err)
-		return
+	if errors.Is(err, context.DeadlineExceeded) {
+		// no answer from current hop
+		fmt.Println("...")
+		continue
 	}
 	from := dst
-	if r.Err != nil {
-		from = r.Err.From()
-	}
-	fmt.Printf("%-15s %s\n", from, r.RTT)
-	switch r.Err.(type) {
-	case TimeExceededError:
-		continue
+	switch err := err.(type) {
 	case nil:
-		return
+	case TimeExceededError:
+		from = err.From()
 	default:
 		fmt.Println(err)
+		return
+	}
+	fmt.Printf("%-15s %s\n", from, r.RTT)
+	if err == nil {
 		return
 	}
 }
