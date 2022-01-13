@@ -9,12 +9,12 @@ import (
 
 // MTU is <SOL_IP, IP_MTU>
 func MTU(mtu int32) Int32Option {
-	return NewInt32Option(unix.SOL_IP, unix.IP_MTU)
+	return NewInt32Option(unix.SOL_IP, unix.IP_MTU).Set(mtu)
 }
 
 // MTU6 is <SOL_IPV6, IPV6_MTU>
 func MTU6(mtu int32) Int32Option {
-	return NewInt32Option(unix.SOL_IPV6, unix.IPV6_MTU)
+	return NewInt32Option(unix.SOL_IPV6, unix.IPV6_MTU).Set(mtu)
 }
 
 // TTL is <SOL_IP, IP_TTL>
@@ -103,7 +103,7 @@ func (o *PktInfo6) Unmarshal(b []byte) {
 
 // TrafficClass is <SOL_IPV6, IPV6_TCLASS>
 func TrafficClass(tc uint8) Uint8Option {
-	return NewUint8Option(unix.SOL_IPV6, unix.IPV6_TCLASS)
+	return NewUint8Option(unix.SOL_IPV6, unix.IPV6_TCLASS).Set(tc)
 }
 
 // PathMTU is <SOL_IPV6, IPV6_PATHMTU>
