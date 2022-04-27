@@ -67,16 +67,6 @@ func (c *SocketConn) Listen(backlog int) error {
 	return os.NewSyscallError("listen", operr)
 }
 
-func (c *SocketConn) Accept() (nfd int, sa unix.Sockaddr, err error) {
-	var operr error
-	if err := c.Control(func(fd uintptr) {
-		nfd, sa, operr = unix.Accept(int(fd))
-	}); err != nil {
-		return 0, nil, err
-	}
-	return nfd, sa, os.NewSyscallError("accept", operr)
-}
-
 func (c *SocketConn) Connect(sa unix.Sockaddr) error {
 	var operr error
 	if err := c.Control(func(fd uintptr) {
@@ -91,9 +81,9 @@ func (c *SocketConn) Disconnect() error {
 	var operr error
 	if err := c.Control(func(fd uintptr) {
 		_, _, operr = unix.Syscall(unix.SYS_CONNECT, fd,
-			uintptr(unsafe.Pointer(&unix.RawSockaddrInet4{
+			uintptr(unsafe.Pointer(&unix.RawSockaddr{
 				Family: unix.AF_UNSPEC,
-			})), uintptr(unix.SizeofSockaddrInet4))
+			})), unsafe.Sizeof(unix.RawSockaddr{}))
 	}); err != nil {
 		return err
 	}
@@ -120,6 +110,24 @@ func (c *SocketConn) GetSockOpts(opts ...RSockOpt) error {
 	return operr
 }
 
+func (c *SocketConn) Domain() (int, error) {
+	o := NewIntSockOpt(unix.SOL_SOCKET, unix.SO_DOMAIN)
+	err := c.GetSockOpts(o)
+	return o.Get(), err
+}
+
+func (c *SocketConn) Type() (int, error) {
+	o := NewIntSockOpt(unix.SOL_SOCKET, unix.SO_TYPE)
+	err := c.GetSockOpts(o)
+	return o.Get(), err
+}
+
+func (c *SocketConn) Proto() (int, error) {
+	o := NewIntSockOpt(unix.SOL_SOCKET, unix.SO_PROTOCOL)
+	err := c.GetSockOpts(o)
+	return o.Get(), err
+}
+
 func (c *SocketConn) BindToDevice(dev string) error {
 	return c.SetSockOpts(
 		NewStringSockOpt(unix.SOL_SOCKET, unix.SO_BINDTODEVICE).Set(dev))
@@ -127,10 +135,8 @@ func (c *SocketConn) BindToDevice(dev string) error {
 
 func (c *SocketConn) BoundToDevice() (string, error) {
 	o := NewStringSockOpt(unix.SOL_SOCKET, unix.SO_BINDTODEVICE).SetSize(unix.IFNAMSIZ)
-	if err := c.GetSockOpts(o); err != nil {
-		return "", err
-	}
-	return o.Get(), nil
+	err := c.GetSockOpts(o)
+	return o.Get(), err
 }
 
 func (c *SocketConn) BindToIfIndex(ifIndex int) error {
@@ -140,10 +146,8 @@ func (c *SocketConn) BindToIfIndex(ifIndex int) error {
 
 func (c *SocketConn) BoundToIfIndex() (int, error) {
 	o := NewIntSockOpt(unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX)
-	if err := c.GetSockOpts(o); err != nil {
-		return 0, err
-	}
-	return o.Get(), nil
+	err := c.GetSockOpts(o)
+	return o.Get(), err
 }
 
 func (c *SocketConn) AttachFilter(instrs []bpf.Instruction) error {
@@ -163,19 +167,26 @@ func (c *SocketConn) AttachFilterRaw(f []bpf.RawInstruction) error {
 			})))
 }
 
-func errWouldBlock(err error) bool {
-	return err == unix.EAGAIN || err == unix.EWOULDBLOCK
-}
-
 func (c *SocketConn) Read(f func(fd uintptr) (done bool)) error {
 	return c.rc.Read(f)
+}
+
+func (c *SocketConn) Accept() (nfd int, sa unix.Sockaddr, err error) {
+	var operr error
+	if err := c.Read(func(fd uintptr) (done bool) {
+		nfd, sa, operr = unix.Accept(int(fd))
+		return !isTemporary(operr)
+	}); err != nil {
+		return 0, nil, err
+	}
+	return nfd, sa, os.NewSyscallError("accept", operr)
 }
 
 func (c *SocketConn) RecvFrom(buf []byte, flags int) (n int, from unix.Sockaddr, err error) {
 	var operr error
 	if err := c.rc.Read(func(fd uintptr) (done bool) {
-		n, from, operr = unix.Recvfrom(int(fd), buf, flags)
-		return !errWouldBlock(operr)
+		n, from, operr = unix.Recvfrom(int(fd), buf, flags|unix.MSG_DONTWAIT)
+		return !isTemporary(operr)
 	}); err != nil {
 		return 0, nil, err
 	}
@@ -185,8 +196,8 @@ func (c *SocketConn) RecvFrom(buf []byte, flags int) (n int, from unix.Sockaddr,
 func (c *SocketConn) RecvMsg(buf []byte, oob []byte, flags int) (n, oobn int, recvflags int, from unix.Sockaddr, err error) {
 	var operr error
 	if err := c.rc.Read(func(fd uintptr) (done bool) {
-		n, oobn, recvflags, from, operr = unix.Recvmsg(int(fd), buf, oob, flags)
-		return !errWouldBlock(operr)
+		n, oobn, recvflags, from, operr = unix.Recvmsg(int(fd), buf, oob, flags|unix.MSG_DONTWAIT)
+		return !isTemporary(operr)
 	}); err != nil {
 		return 0, 0, 0, nil, err
 	}
@@ -196,12 +207,61 @@ func (c *SocketConn) RecvMsg(buf []byte, oob []byte, flags int) (n, oobn int, re
 func (c *SocketConn) RecvMmsg(hs []Mmsghdr, flags int) (n int, err error) {
 	var operr error
 	if err := c.rc.Read(func(fd uintptr) (done bool) {
-		n, operr = Recvmmsg(fd, hs, flags)
-		return !errWouldBlock(operr)
+		n, operr = Recvmmsg(fd, hs, flags|unix.MSG_DONTWAIT)
+		return !isTemporary(operr)
 	}); err != nil {
 		return 0, err
 	}
 	return n, os.NewSyscallError("recvmmsg", operr)
+}
+
+type Message struct {
+	From    []byte
+	Buff    []byte
+	Control []byte
+	Flags   int32
+}
+
+func (c *SocketConn) ListenPacket(ctx context.Context, flags int,
+	numMsgs, buffLen, controlLen int, handler func(Message)) error {
+	if handler == nil {
+		panic("nil handler")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if err := c.SetReadContext(ctx); err != nil {
+		return err
+	}
+
+	domain, err := c.Domain()
+	if err != nil {
+		return err
+	}
+	sas, buffs, oobs, hs := MakeMmsghdrs(domain,
+		numMsgs, buffLen, controlLen)
+
+	for {
+		n, err := c.RecvMmsg(hs, flags)
+		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				return ctx.Err()
+			}
+			return err
+		}
+		for i := range hs[:n] {
+			handler(Message{
+				From:    sas[i][:hs[i].Hdr.Namelen],
+				Buff:    buffs[i][:hs[i].Len],
+				Control: oobs[i][:hs[i].Hdr.Controllen],
+				Flags:   hs[i].Hdr.Flags,
+			})
+			// we need to reset control length to original oob length
+			// and namelen since it was changed by recvmmsg(2).
+			hs[i].Hdr.Namelen = SockaddrLen(domain)
+			hs[i].Hdr.SetControllen(len(oobs[i]))
+		}
+	}
 }
 
 func (c *SocketConn) Write(f func(fd uintptr) (done bool)) error {
@@ -211,8 +271,8 @@ func (c *SocketConn) Write(f func(fd uintptr) (done bool)) error {
 func (c *SocketConn) SendTo(buf []byte, flags int, to unix.Sockaddr) error {
 	var operr error
 	if err := c.rc.Write(func(fd uintptr) (done bool) {
-		operr = unix.Sendto(int(fd), buf, flags, to)
-		return !errWouldBlock(operr)
+		operr = unix.Sendto(int(fd), buf, flags|unix.MSG_DONTWAIT, to)
+		return !isTemporary(operr)
 	}); err != nil {
 		return err
 	}
@@ -223,8 +283,8 @@ func (c *SocketConn) SendMsg(buf []byte, to unix.Sockaddr, flags int, opts ...WS
 	oob := MarshalCmsg(opts...)
 	var operr error
 	if err := c.rc.Write(func(fd uintptr) (done bool) {
-		n, operr = unix.SendmsgN(int(fd), buf, oob, to, flags)
-		return !errWouldBlock(operr)
+		n, operr = unix.SendmsgN(int(fd), buf, oob, to, flags|unix.MSG_DONTWAIT)
+		return !isTemporary(operr)
 	}); err != nil {
 		return 0, err
 	}
@@ -234,8 +294,8 @@ func (c *SocketConn) SendMsg(buf []byte, to unix.Sockaddr, flags int, opts ...WS
 func (c *SocketConn) SendMmsg(hs []Mmsghdr, flags int) (n int, err error) {
 	var operr error
 	if err := c.rc.Write(func(fd uintptr) (done bool) {
-		n, operr = Sendmmsg(fd, hs, flags)
-		return !errWouldBlock(operr)
+		n, operr = Sendmmsg(fd, hs, flags|unix.MSG_DONTWAIT)
+		return !isTemporary(operr)
 	}); err != nil {
 		return 0, err
 	}
@@ -332,4 +392,9 @@ func (c *SocketConn) WUnlock() error {
 
 func (c *SocketConn) SetWriteContext(ctx context.Context) error {
 	return c.setContext(w, ctx)
+}
+
+func isTemporary(err error) bool {
+	t, ok := err.(unix.Errno)
+	return ok && t.Temporary()
 }

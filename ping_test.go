@@ -19,7 +19,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var ipv4Loopback = net.IPv4(127, 0, 0, 1)
+var ipv4Loopback = net.IPv4(127, 0, 0, 1).To4()
 
 func TestPinger(t *testing.T) {
 	p, err := New(&net.UDPAddr{IP: ipv4Loopback}, TTL(1))
@@ -49,6 +49,7 @@ func TestPinger(t *testing.T) {
 				*(*uint16)(unsafe.Pointer(&b[0])) = i
 				r, err := p.PingContextPayload(ctx, ipv4Loopback, b, ttl)
 				require.NoError(t, err)
+				require.Equal(t, ipv4Loopback, r.From)
 				require.GreaterOrEqual(t, r.RTT, time.Duration(0))
 				require.Equal(t, b, r.Data)
 			})

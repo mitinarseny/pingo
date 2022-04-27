@@ -56,32 +56,33 @@ type sockMsg struct {
 // and sends them to channel.
 // numMsgs is the number of mmsghdrs to create.
 func (p *Pinger) read(numMsgs int) error {
-	const mtu = 1500
+	family, err := p.c.Domain()
+	if err != nil {
+		return err
+	}
+	const mtu = 1<<16 - 1 - 20
 
 	oobSize := unix.CmsgSpace(int(unsafe.Sizeof(unix.ScmTimestamping{}))) +
 		unix.CmsgSpace(int(TTL(0).Len()))
-	namelen := unix.SizeofSockaddrInet4
-	if p.IsIPv6() {
-		namelen = unix.SizeofSockaddrInet6
-	}
-	names, buffs, oobs, hs := unixx.MakeMmsghdrs(numMsgs, namelen, mtu, oobSize)
-	_, errQueueBuffs, errQueueOOBs, errQueueHs := unixx.MakeMmsghdrs(numMsgs, 0,
+	sas, buffs, oobs, hs := unixx.MakeMmsghdrs(family, numMsgs, mtu, oobSize)
+	_, errQueueBuffs, errQueueOOBs, errQueueHs := unixx.MakeMmsghdrs(unix.AF_UNSPEC, numMsgs,
 		mtu, oobSize+unix.CmsgSpace(
 			int(unsafe.Sizeof(unix.SockExtendedErr{})+unix.SizeofSockaddrAny)))
 
 	dispatchAndReset := func(hs []unixx.Mmsghdr, buffs [][]byte, oobs [][]byte) {
 		for i := range hs {
 			var from net.IP
-			if hs[i].Hdr.Namelen == uint32(namelen) {
-				var name []byte
-				switch namelen {
+			if salen := hs[i].Hdr.Namelen; hs[i].Hdr.Flags&unix.MSG_ERRQUEUE == 0 && salen > 0 {
+				ptr := unsafe.Pointer(&sas[i][:salen][0])
+				var addr []byte
+				switch salen {
 				case unix.SizeofSockaddrInet4:
-					name = (*unix.RawSockaddrInet4)(names[i]).Addr[:]
+					addr = (*unix.RawSockaddrInet4)(ptr).Addr[:]
 				case unix.SizeofSockaddrInet6:
-					name = (*unix.RawSockaddrInet6)(names[i]).Addr[:]
+					addr = (*unix.RawSockaddrInet6)(ptr).Addr[:]
 				}
-				from = make(net.IP, len(name))
-				copy(from, name)
+				from = make(net.IP, len(addr))
+				copy(from, addr)
 			}
 
 			// copy buffers
@@ -89,8 +90,8 @@ func (p *Pinger) read(numMsgs int) error {
 				append([]byte(nil), oobs[i][:hs[i].Hdr.Controllen]...))
 
 			// we need to reset control length to original oob length
-			// since it was changed by recvmmsg(2).
-			hs[i].Hdr.Namelen = uint32(namelen)
+			// and namelen since it was changed by recvmmsg(2).
+			hs[i].Hdr.Namelen = unixx.SockaddrLen(family)
 			hs[i].Hdr.SetControllen(len(oobs[i]))
 		}
 	}
