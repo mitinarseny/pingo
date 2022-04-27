@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -47,7 +49,7 @@ func TestPinger(t *testing.T) {
 				*(*uint16)(unsafe.Pointer(&b[0])) = i
 				r, err := p.PingContextPayload(ctx, ipv4Loopback, b, ttl)
 				require.NoError(t, err)
-				require.Greater(t, r.RTT, time.Duration(0))
+				require.GreaterOrEqual(t, r.RTT, time.Duration(0))
 				require.Equal(t, b, r.Data)
 			})
 		}
@@ -81,7 +83,7 @@ func BenchmarkPinger(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			if r.RTT <= 0 {
+			if r.RTT < 0 {
 				b.Fatal("RTT is not positive")
 			}
 			sum += r.RTT
@@ -91,6 +93,37 @@ func BenchmarkPinger(b *testing.B) {
 
 	avgRtt := sumRTT / time.Duration(b.N)
 	b.ReportMetric(float64(avgRtt.Microseconds()), "rtt(μs)/op")
+}
+
+func BenchmarkPinger_Send(b *testing.B) {
+	p, err := New(&net.UDPAddr{IP: ipv4Loopback}, TTL(1))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var g errgroup.Group
+	g.Go(func() error {
+		return p.Listen(ctx)
+	})
+	defer func() {
+		cancel()
+		if err := g.Wait(); !errors.Is(err, context.Canceled) {
+			b.Fatal(err)
+		}
+	}()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := p.Send(ipv4.ICMPTypeEcho, 0, &icmp.Echo{
+				Seq: 0,
+			}, ipv4Loopback); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
 
 func Example_traceroute() {

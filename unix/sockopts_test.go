@@ -1,8 +1,6 @@
-package ping
+package unix
 
 import (
-	"fmt"
-	"log"
 	"testing"
 	"unsafe"
 
@@ -17,7 +15,7 @@ func TestNewOption(t *testing.T) {
 		length = uint64(unsafe.Sizeof(val))
 	)
 	i := val
-	o := NewOption(lvl, typ, unsafe.Sizeof(i), unsafe.Pointer(&i))
+	o := NewSockOpt(lvl, typ, unsafe.Sizeof(i), unsafe.Pointer(&i))
 	require.Equal(t, lvl, o.Level())
 	require.Equal(t, typ, o.Type())
 	require.Equal(t, length, o.Len())
@@ -31,19 +29,4 @@ func TestNewOption(t *testing.T) {
 
 	o.Unmarshal(want)
 	require.Equal(t, val, i)
-}
-
-func ExamplePinger_set_get() {
-	p, err := New(nil, TTL(1))
-	if err != nil {
-		log.Panic(err)
-	}
-	defer p.Close()
-
-	ttl := TTL(0)
-	if err := p.Get(ttl); err != nil {
-		log.Panic(err)
-	}
-	fmt.Println(ttl.Get())
-	// Output: 1
 }

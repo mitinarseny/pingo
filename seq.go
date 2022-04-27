@@ -2,6 +2,7 @@ package ping
 
 import (
 	"context"
+	"net"
 	"sync"
 	"time"
 )
@@ -11,8 +12,12 @@ type pending struct {
 	// ctx is context of the sender
 	ctx context.Context
 
-	// sentAt is the timestamp when the request was sent
-	sentAt time.Time
+	// at is the timestamp when the request was sent or received
+	at time.Time
+
+	// earlyReply is a Reply without RTT set
+	// because TX timestamp has not been received yet
+	earlyReply *Reply
 
 	// reply is where to send the reply to
 	reply chan<- Reply
@@ -48,9 +53,9 @@ func (s *sequences) add(ctx context.Context) (uint16, <-chan Reply, error) {
 	rep := make(chan Reply, 1)
 	s.mu.Lock()
 	s.m[seq] = &pending{
-		ctx:    ctx,
-		sentAt: time.Now(),
-		reply:  rep,
+		ctx:   ctx,
+		at:    time.Now(),
+		reply: rep,
 	}
 	s.mu.Unlock()
 	return seq, rep, nil
@@ -63,23 +68,47 @@ func (s *sequences) sentAt(seq uint16, sentAt time.Time) {
 	if pend == nil {
 		return
 	}
-	pend.sentAt = sentAt
+	if pend.earlyReply == nil {
+		pend.at = sentAt
+	} else {
+		pend.earlyReply.RTT = nonNegative(pend.at.Sub(sentAt))
+		select {
+		case <-pend.ctx.Done():
+			// sender gave up waiting for the reply
+			return
+		case pend.reply <- *pend.earlyReply:
+		}
+	}
 }
 
 // reply dispatches the reply for given sequence number to the sender.
 // It should not be concurrentlyy used with sequences.sentAt()
-func (s *sequences) reply(seq uint16, receivedAt time.Time,
+func (s *sequences) reply(from net.IP, seq uint16, receivedAt time.Time,
 	payload []byte, ttl uint8, icmpErr ICMPError) {
 	pend := s.get(seq)
 	if pend == nil {
 		return
 	}
+
+	if pend.at.IsZero() {
+		// TX timestamp has not been received yet
+		pend.at = receivedAt
+		pend.earlyReply = &Reply{
+			From: from,
+			TTL:  ttl,
+			Data: payload,
+			Err:  icmpErr,
+		}
+		return
+	}
+
 	select {
 	case <-pend.ctx.Done():
-		// sender gave up waiting fr the reply
+		// sender gave up waiting for the reply
 		return
 	case pend.reply <- Reply{
-		RTT:  receivedAt.Sub(pend.sentAt),
+		From: from,
+		RTT:  nonNegative(receivedAt.Sub(pend.at)),
 		TTL:  ttl,
 		Data: payload,
 		Err:  icmpErr,
@@ -107,6 +136,13 @@ func (s *sequences) free(seq uint16) *pending {
 	}
 	s.r.free(seq)
 	return p
+}
+
+func nonNegative(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // reserve stores unique uint16 numbers

@@ -4,28 +4,31 @@ import (
 	"net"
 	"unsafe"
 
+	unixx "github.com/mitinarseny/pingo/unix"
 	"golang.org/x/sys/unix"
 )
 
 // MTU is <SOL_IP, IP_MTU>
-func MTU(mtu int32) Int32Option {
-	return NewInt32Option(unix.SOL_IP, unix.IP_MTU).Set(mtu)
+func MTU(mtu int32) unixx.Int32SockOpt {
+	return unixx.NewInt32SockOpt(unix.SOL_IP, unix.IP_MTU).Set(mtu)
 }
 
 // MTU6 is <SOL_IPV6, IPV6_MTU>
-func MTU6(mtu int32) Int32Option {
-	return NewInt32Option(unix.SOL_IPV6, unix.IPV6_MTU).Set(mtu)
+func MTU6(mtu int32) unixx.Int32SockOpt {
+	return unixx.NewInt32SockOpt(unix.SOL_IPV6, unix.IPV6_MTU).Set(mtu)
 }
 
 // TTL is <SOL_IP, IP_TTL>
-func TTL(ttl uint8) Uint8Option {
-	return NewUint8Option(unix.SOL_IP, unix.IP_TTL).Set(ttl)
+func TTL(ttl uint8) unixx.Uint8SockOpt {
+	return unixx.NewUint8SockOpt(unix.SOL_IP, unix.IP_TTL).Set(ttl)
 }
 
 // TTL is <SOL_IPV6, IPV6_HOPLIMIT>
-func HopLimit(hl uint8) Uint8Option {
-	return NewUint8Option(unix.SOL_IPV6, unix.IPV6_HOPLIMIT).Set(hl)
+func HopLimit(hl uint8) unixx.Uint8SockOpt {
+	return unixx.NewUint8SockOpt(unix.SOL_IPV6, unix.IPV6_HOPLIMIT).Set(hl)
 }
+
+var _ = unixx.RWSockOpt(&PktInfo{})
 
 // PktInfo is <SOL_IP, IP_PKTINFO>
 type PktInfo struct {
@@ -63,6 +66,8 @@ func (o *PktInfo) Unmarshal(b []byte) {
 	}
 	copy(o.Dst, pi.Addr[:])
 }
+
+var _ = unixx.RWSockOpt(&PktInfo6{})
 
 // PktInfo is <SOL_IPV6, IPV6_PKTINFO>
 type PktInfo6 struct {
@@ -102,9 +107,11 @@ func (o *PktInfo6) Unmarshal(b []byte) {
 }
 
 // TrafficClass is <SOL_IPV6, IPV6_TCLASS>
-func TrafficClass(tc uint8) Uint8Option {
-	return NewUint8Option(unix.SOL_IPV6, unix.IPV6_TCLASS).Set(tc)
+func TrafficClass(tc uint8) unixx.Uint8SockOpt {
+	return unixx.NewUint8SockOpt(unix.SOL_IPV6, unix.IPV6_TCLASS).Set(tc)
 }
+
+var _ = unixx.RWSockOpt(&PathMTU{})
 
 // PathMTU is <SOL_IPV6, IPV6_PATHMTU>
 type PathMTU struct {
@@ -140,21 +147,21 @@ func (o *PathMTU) Unmarshal(b []byte) {
 }
 
 // recvErr is <SOL_IP, IP_RECVERR>
-func recvErr(v bool) BoolOption {
-	return NewBoolOption(unix.SOL_IP, unix.IP_RECVERR).Set(v)
+func recvErr(v bool) unixx.BoolSockOpt {
+	return unixx.NewBoolSockOpt(unix.SOL_IP, unix.IP_RECVERR).Set(v)
 }
 
 // recvErr6 is <SOL_IPV6, IPV6_RECVERR>
-func recvErr6(v bool) BoolOption {
-	return NewBoolOption(unix.SOL_IPV6, unix.IPV6_RECVERR).Set(v)
+func recvErr6(v bool) unixx.BoolSockOpt {
+	return unixx.NewBoolSockOpt(unix.SOL_IPV6, unix.IPV6_RECVERR).Set(v)
 }
 
 // recvTTL is <SOL_IP, IP_RECVTTL>
-func recvTTL(v bool) BoolOption {
-	return NewBoolOption(unix.SOL_IP, unix.IP_RECVTTL).Set(v)
+func recvTTL(v bool) unixx.BoolSockOpt {
+	return unixx.NewBoolSockOpt(unix.SOL_IP, unix.IP_RECVTTL).Set(v)
 }
 
 // recvHopLimit is <SOL_IPV6, IPV6_RECVHOPLIMIT>
-func recvHopLimit(v bool) BoolOption {
-	return NewBoolOption(unix.SOL_IPV6, unix.IPV6_RECVHOPLIMIT).Set(v)
+func recvHopLimit(v bool) unixx.BoolSockOpt {
+	return unixx.NewBoolSockOpt(unix.SOL_IPV6, unix.IPV6_RECVHOPLIMIT).Set(v)
 }
