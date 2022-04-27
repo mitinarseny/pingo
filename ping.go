@@ -148,10 +148,7 @@ func (p *Pinger) Listen(ctx context.Context) error {
 	}
 
 	const numMsgs = 100
-	ch := make(chan sockMsg, numMsgs)
-	defer close(ch)
-
-	err := p.read(ch, numMsgs)
+	err := p.read(numMsgs)
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		err = ctx.Err()
 	}

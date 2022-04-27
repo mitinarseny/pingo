@@ -55,7 +55,7 @@ type sockMsg struct {
 // read reads messgaes from underlying socket and its error queue
 // and sends them to channel.
 // numMsgs is the number of mmsghdrs to create.
-func (p *Pinger) read(ch chan<- sockMsg, numMsgs int) error {
+func (p *Pinger) read(numMsgs int) error {
 	const mtu = 1500
 
 	oobSize := unix.CmsgSpace(int(unsafe.Sizeof(unix.ScmTimestamping{}))) +
