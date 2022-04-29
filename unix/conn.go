@@ -216,15 +216,15 @@ func (c *SocketConn) RecvMmsg(hs []Mmsghdr, flags int) (n int, err error) {
 	return n, os.NewSyscallError("recvmmsg", operr)
 }
 
-type Message struct {
+type SockMsg struct {
 	From    []byte
-	Buff    []byte
+	Data    []byte
 	Control []byte
 	Flags   int32
 }
 
 func (c *SocketConn) ListenPacket(ctx context.Context, flags int,
-	numMsgs, buffLen, controlLen int, handler func(Message) error) error {
+	numMsgs, dataLen, controlLen int, handler func(SockMsg) error) error {
 	if handler == nil {
 		panic("nil handler")
 	}
@@ -240,7 +240,7 @@ func (c *SocketConn) ListenPacket(ctx context.Context, flags int,
 		return err
 	}
 	sas, buffs, oobs, hs := MakeMmsghdrs(domain,
-		numMsgs, buffLen, controlLen)
+		numMsgs, dataLen, controlLen)
 
 	for {
 		n, err := c.RecvMmsg(hs, flags)
@@ -251,9 +251,9 @@ func (c *SocketConn) ListenPacket(ctx context.Context, flags int,
 			return err
 		}
 		for i := range hs[:n] {
-			if err := handler(Message{
+			if err := handler(SockMsg{
 				From:    sas[i][:hs[i].Hdr.Namelen],
-				Buff:    buffs[i][:hs[i].Len],
+				Data:    buffs[i][:hs[i].Len],
 				Control: oobs[i][:hs[i].Hdr.Controllen],
 				Flags:   hs[i].Hdr.Flags,
 			}); err != nil {
