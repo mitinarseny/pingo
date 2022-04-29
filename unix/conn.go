@@ -223,7 +223,7 @@ type Message struct {
 }
 
 func (c *SocketConn) ListenPacket(ctx context.Context, flags int,
-	numMsgs, buffLen, controlLen int, handler func(Message)) error {
+	numMsgs, buffLen, controlLen int, handler func(Message) error) error {
 	if handler == nil {
 		panic("nil handler")
 	}
@@ -250,12 +250,14 @@ func (c *SocketConn) ListenPacket(ctx context.Context, flags int,
 			return err
 		}
 		for i := range hs[:n] {
-			handler(Message{
+			if err := handler(Message{
 				From:    sas[i][:hs[i].Hdr.Namelen],
 				Buff:    buffs[i][:hs[i].Len],
 				Control: oobs[i][:hs[i].Hdr.Controllen],
 				Flags:   hs[i].Hdr.Flags,
-			})
+			}); err != nil {
+				return err
+			}
 			// we need to reset control length to original oob length
 			// and namelen since it was changed by recvmmsg(2).
 			hs[i].Hdr.Namelen = SockaddrLen(domain)
