@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -227,12 +228,12 @@ func (c *SocketConn) ListenPacket(ctx context.Context, flags int,
 	if handler == nil {
 		panic("nil handler")
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
-	if err := c.SetReadContext(ctx); err != nil {
+	cancel, err := c.SetReadContext(ctx)
+	if err != nil {
 		return err
 	}
+	defer cancel()
 
 	domain, err := c.Domain()
 	if err != nil {
@@ -332,20 +333,31 @@ func (c *SocketConn) unlock(m mode) error {
 	return c.setDeadline(m, time.Time{})
 }
 
-func (c *SocketConn) setContext(m mode, ctx context.Context) error {
+func (c *SocketConn) setContext(m mode, ctx context.Context) (context.CancelFunc, error) {
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	default:
 	}
+
 	if err := c.unlock(m); err != nil {
-		return err
+		return nil, err
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		<-ctx.Done()
 		_ = c.lock(m)
 	}()
-	return ctx.Err()
+
+	return func() {
+		cancel()
+		wg.Wait()
+	}, nil
 }
 
 func (c *SocketConn) SetDeadline(t time.Time) error {
@@ -360,7 +372,7 @@ func (c *SocketConn) Unlock() error {
 	return c.unlock(rw)
 }
 
-func (c *SocketConn) SetContext(ctx context.Context) error {
+func (c *SocketConn) SetContext(ctx context.Context) (context.CancelFunc, error) {
 	return c.setContext(rw, ctx)
 }
 
@@ -376,7 +388,7 @@ func (c *SocketConn) RUnlock() error {
 	return c.SetReadDeadline(time.Time{})
 }
 
-func (c *SocketConn) SetReadContext(ctx context.Context) error {
+func (c *SocketConn) SetReadContext(ctx context.Context) (context.CancelFunc, error) {
 	return c.setContext(r, ctx)
 }
 
@@ -392,7 +404,7 @@ func (c *SocketConn) WUnlock() error {
 	return c.SetWriteDeadline(time.Time{})
 }
 
-func (c *SocketConn) SetWriteContext(ctx context.Context) error {
+func (c *SocketConn) SetWriteContext(ctx context.Context) (context.CancelFunc, error) {
 	return c.setContext(w, ctx)
 }
 

@@ -140,15 +140,14 @@ func (p *Pinger) Close() error {
 // It returns a non-nil error if context is done or an error occured
 // while receiving on sokcet.
 func (p *Pinger) Listen(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	if err := p.c.SetReadContext(ctx); err != nil {
+	cancel, err := p.c.SetReadContext(ctx)
+	if err != nil {
 		return err
 	}
+	defer cancel()
 
 	const numMsgs = 100
-	err := p.read(numMsgs)
+	err = p.read(numMsgs)
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		err = ctx.Err()
 	}
