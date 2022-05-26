@@ -196,11 +196,11 @@ func (p *Pinger) dispatch(from net.IP, buff, oob []byte) {
 				ttlOpt := TTL(0)
 				unixx.UnmarshalOpt(scm.Data, ttlOpt)
 				ttlOpt.Ptr()
-				ttl = ttlOpt.Get()
+				ttl = uint8(ttlOpt.Get())
 			case unix.IPV6_HOPLIMIT:
 				hlOpt := HopLimit(0)
 				unixx.UnmarshalOpt(scm.Data, hlOpt)
-				ttl = hlOpt.Get()
+				ttl = uint8(hlOpt.Get())
 			}
 		case unix.SOL_SOCKET:
 			switch scm.Header.Type {

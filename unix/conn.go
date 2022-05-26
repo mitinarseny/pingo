@@ -112,20 +112,19 @@ func (c *SocketConn) GetSockOpts(opts ...SockOpt) error {
 }
 
 func (c *SocketConn) Domain() (int, error) {
-	o := NewIntegerSockOpt[int](unix.SOL_SOCKET, unix.SO_DOMAIN)
-	// o := NewIntSockOpt(unix.SOL_SOCKET, unix.SO_DOMAIN)
+	o := NewSockOpt[int](unix.SOL_SOCKET, unix.SO_DOMAIN)
 	err := c.GetSockOpts(o)
 	return o.Get(), err
 }
 
 func (c *SocketConn) Type() (int, error) {
-	o := NewIntegerSockOpt[int](unix.SOL_SOCKET, unix.SO_TYPE)
+	o := NewSockOpt[int](unix.SOL_SOCKET, unix.SO_TYPE)
 	err := c.GetSockOpts(o)
 	return o.Get(), err
 }
 
 func (c *SocketConn) Proto() (int, error) {
-	o := NewIntegerSockOpt[int](unix.SOL_SOCKET, unix.SO_PROTOCOL)
+	o := NewSockOpt[int](unix.SOL_SOCKET, unix.SO_PROTOCOL)
 	err := c.GetSockOpts(o)
 	return o.Get(), err
 }
@@ -142,12 +141,11 @@ func (c *SocketConn) BoundToDevice() (string, error) {
 }
 
 func (c *SocketConn) BindToIfIndex(ifIndex int) error {
-	return c.SetSockOpts(
-		NewIntegerSockOpt[int](unix.SOL_SOCKET, unix.SO_BINDTODEVICE).Set(ifIndex))
+	return c.SetSockOpts(NewSockOpt[int](unix.SOL_SOCKET, unix.SO_BINDTODEVICE).Set(ifIndex))
 }
 
 func (c *SocketConn) BoundToIfIndex() (int, error) {
-	o := NewIntegerSockOpt[int](unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX)
+	o := NewSockOpt[int](unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX)
 	err := c.GetSockOpts(o)
 	return o.Get(), err
 }
@@ -162,11 +160,11 @@ func (c *SocketConn) AttachFilter(instrs []bpf.Instruction) error {
 
 func (c *SocketConn) AttachFilterRaw(f []bpf.RawInstruction) error {
 	return c.SetSockOpts(
-		NewPointerSockOpt(unix.SOL_SOCKET, unix.SO_ATTACH_FILTER).Set(unix.SizeofSockFprog,
-			unsafe.Pointer(&unix.SockFprog{
+		NewSockOpt[unix.SockFprog](unix.SOL_SOCKET, unix.SO_ATTACH_FILTER).Set(
+			unix.SockFprog{
 				Len:    uint16(len(f)),
 				Filter: (*unix.SockFilter)(unsafe.Pointer(&f[0])),
-			})))
+			}))
 }
 
 func (c *SocketConn) Read(f func(fd uintptr) (done bool)) error {

@@ -4,7 +4,6 @@ import (
 	"os"
 	"unsafe"
 
-	"golang.org/x/exp/constraints"
 	"golang.org/x/sys/unix"
 )
 
@@ -85,55 +84,15 @@ func (o *sockopt) Type() int32 {
 	return o.typ
 }
 
-type PointerSockOpt struct {
-	sockopt
-	length uint32
-	ptr    unsafe.Pointer
-}
-
-var _ SockOpt = &PointerSockOpt{}
-
-func NewPointerSockOpt(lvl, typ int32) *PointerSockOpt {
-	return &PointerSockOpt{
-		sockopt: sockopt{
-			lvl: lvl,
-			typ: typ,
-		},
-	}
-}
-
-func (o PointerSockOpt) Len() uint32 {
-	return o.length
-}
-
-func (o *PointerSockOpt) Ptr() unsafe.Pointer {
-	return o.ptr
-}
-
-func (o *PointerSockOpt) setLen(l uint32) {
-	o.length = l
-}
-
-func (o *PointerSockOpt) bytes() []byte {
-	return unsafe.Slice((*byte)(o.Ptr()), o.Len())
-}
-
-func (o *PointerSockOpt) Set(length uint32, ptr unsafe.Pointer) *PointerSockOpt {
-	o.length = length
-	o.ptr = ptr
-	return o
-}
-
-// IntegerSockOpt is a read/write (get/set)sockopt option
-type IntegerSockOpt[T constraints.Integer | ~bool] struct {
+type ValueSockOpt[T any] struct {
 	sockopt
 	value T
 }
 
-var _ SockOpt = &IntegerSockOpt[int]{}
+var _ SockOpt = &ValueSockOpt[int]{}
 
-func NewIntegerSockOpt[T constraints.Integer | ~bool](lvl, typ int32) *IntegerSockOpt[T] {
-	return &IntegerSockOpt[T]{
+func NewSockOpt[T any](lvl, typ int32) *ValueSockOpt[T] {
+	return &ValueSockOpt[T]{
 		sockopt: sockopt{
 			lvl: lvl,
 			typ: typ,
@@ -141,26 +100,48 @@ func NewIntegerSockOpt[T constraints.Integer | ~bool](lvl, typ int32) *IntegerSo
 	}
 }
 
-func (o IntegerSockOpt[T]) Len() uint32 {
-	return uint32(unsafe.Sizeof(o.value))
+func (o *ValueSockOpt[T]) Len() uint32 {
+	var tmp T
+	return uint32(unsafe.Sizeof(tmp))
 }
 
-func (o *IntegerSockOpt[T]) Ptr() unsafe.Pointer {
+func (o *ValueSockOpt[T]) Ptr() unsafe.Pointer {
 	return unsafe.Pointer(&o.value)
 }
 
-func (o *IntegerSockOpt[T]) setLen(uint32) {}
+func (o *ValueSockOpt[T]) setLen(uint32) {}
 
-func (o *IntegerSockOpt[T]) bytes() []byte {
+func (o *ValueSockOpt[T]) bytes() []byte {
 	return unsafe.Slice((*byte)(o.Ptr()), o.Len())
 }
 
-func (o IntegerSockOpt[T]) Get() T {
+func (o *ValueSockOpt[T]) Get() T {
 	return o.value
 }
 
-func (o *IntegerSockOpt[T]) Set(v T) *IntegerSockOpt[T] {
+func (o *ValueSockOpt[T]) Set(v T) *ValueSockOpt[T] {
 	o.value = v
+	return o
+}
+
+type BoolSockOpt struct {
+	*ValueSockOpt[int32]
+}
+
+func NewBoolSockOpt(lvl, typ int32) BoolSockOpt {
+	return BoolSockOpt{NewSockOpt[int32](lvl, typ)}
+}
+
+func (o BoolSockOpt) Get() bool {
+	return o.ValueSockOpt.Get() != 0
+}
+
+func (o BoolSockOpt) Set(v bool) BoolSockOpt {
+	var i int32
+	if v {
+		i = 1
+	}
+	o.ValueSockOpt.Set(i)
 	return o
 }
 
