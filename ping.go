@@ -37,7 +37,7 @@ type Pinger struct {
 //
 // To enable receiving packets, Listen() should be called on returned Pinger.
 // Close() should be called after Listen() returns.
-func New(laddr *net.UDPAddr, opts ...unixx.WSockOpt) (p *Pinger, err error) {
+func New(laddr *net.UDPAddr, opts ...unixx.SockOpt) (p *Pinger, err error) {
 	if laddr == nil {
 		laddr = new(net.UDPAddr)
 	}
@@ -174,12 +174,12 @@ type Reply struct {
 }
 
 // Set sets given options on the underlying socket with setsockopt(2)
-func (p *Pinger) Set(opts ...unixx.WSockOpt) error {
+func (p *Pinger) Set(opts ...unixx.SockOpt) error {
 	return p.c.SetSockOpts(opts...)
 }
 
 // Get gets given options from the underlying socket with getsockopt(2)
-func (p *Pinger) Get(opts ...unixx.RSockOpt) error {
+func (p *Pinger) Get(opts ...unixx.SockOpt) error {
 	return p.c.GetSockOpts(opts...)
 }
 
@@ -188,7 +188,7 @@ func (p *Pinger) Get(opts ...unixx.RSockOpt) error {
 // not interfere with Ping* methods.
 // opts can be used to set per-packet sendmsg(2) options.
 func (p *Pinger) Send(typ icmp.Type, code uint8, body icmp.MessageBody,
-	dst net.IP, opts ...unixx.WSockOpt) error {
+	dst net.IP, opts ...unixx.SockOpt) error {
 	return p.send(typ, code, body, dst, nil, append(opts, timestamping(0))...)
 }
 
@@ -201,7 +201,7 @@ func (p *Pinger) Send(typ icmp.Type, code uint8, body icmp.MessageBody,
 // ctx.Err() or ICMPError. If the returned error is ICMPError, then the
 // returned Reply contains valid fields and has the same Err.
 func (p *Pinger) PingContextPayload(ctx context.Context, dst net.IP, payload []byte,
-	opts ...unixx.WSockOpt) (Reply, error) {
+	opts ...unixx.SockOpt) (Reply, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -241,17 +241,17 @@ func (p *Pinger) PingContextPayload(ctx context.Context, dst net.IP, payload []b
 }
 
 // PingContext is like PingContextPayload, but with no payload.
-func (p *Pinger) PingContext(ctx context.Context, dst net.IP, opts ...unixx.WSockOpt) (Reply, error) {
+func (p *Pinger) PingContext(ctx context.Context, dst net.IP, opts ...unixx.SockOpt) (Reply, error) {
 	return p.PingContextPayload(ctx, dst, nil, opts...)
 }
 
 // PingPayload is like PingContextPayload, but with background context.
-func (p *Pinger) PingPayload(dst net.IP, payload []byte, opts ...unixx.WSockOpt) (Reply, error) {
+func (p *Pinger) PingPayload(dst net.IP, payload []byte, opts ...unixx.SockOpt) (Reply, error) {
 	return p.PingContextPayload(context.Background(), dst, payload, opts...)
 }
 
 // Ping is like PingContext, but with background context.
-func (p *Pinger) Ping(dst net.IP, opts ...unixx.WSockOpt) (Reply, error) {
+func (p *Pinger) Ping(dst net.IP, opts ...unixx.SockOpt) (Reply, error) {
 	return p.PingContext(context.Background(), dst, opts...)
 }
 
@@ -260,7 +260,7 @@ func (p *Pinger) Ping(dst net.IP, opts ...unixx.WSockOpt) (Reply, error) {
 // Zero timeout means no timeout, so PingContextTimeout(ctx, dst, 0) is
 // equialent to PingContext(ctx, dst)
 func (p *Pinger) PingContextPayloadTimeout(ctx context.Context, dst net.IP,
-	payload []byte, timeout time.Duration, opts ...unixx.WSockOpt) (Reply, error) {
+	payload []byte, timeout time.Duration, opts ...unixx.SockOpt) (Reply, error) {
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -271,18 +271,18 @@ func (p *Pinger) PingContextPayloadTimeout(ctx context.Context, dst net.IP,
 
 // PingContextTimeout is like PingContextPayloadTimeout, but with no payload.
 func (p *Pinger) PingContextTimeout(ctx context.Context, dst net.IP,
-	timeout time.Duration, opts ...unixx.WSockOpt) (Reply, error) {
+	timeout time.Duration, opts ...unixx.SockOpt) (Reply, error) {
 	return p.PingContextPayloadTimeout(ctx, dst, nil, timeout, opts...)
 }
 
 // PingPayloadTimeout is like PingContextPayloadTimeout, but with background context.
 func (p *Pinger) PingPayloadTimeout(dst net.IP, payload []byte,
-	timeout time.Duration, opts ...unixx.WSockOpt) (Reply, error) {
+	timeout time.Duration, opts ...unixx.SockOpt) (Reply, error) {
 	return p.PingContextPayloadTimeout(context.Background(), dst, nil, timeout, opts...)
 }
 
 // PingTimeout is like PingPayloadTimeout, but no payload.
-func (p *Pinger) PingTimeout(dst net.IP, timeout time.Duration, opts ...unixx.WSockOpt) (Reply, error) {
+func (p *Pinger) PingTimeout(dst net.IP, timeout time.Duration, opts ...unixx.SockOpt) (Reply, error) {
 	return p.PingPayloadTimeout(dst, nil, timeout, opts...)
 }
 
@@ -338,7 +338,7 @@ func (rs Replies) MinRTT() time.Duration {
 // when the context is done, so the caller should receive on that channel
 // until it is closed.
 func (p *Pinger) PingChContextPayloadIntervalTimeout(ctx context.Context, payload []byte,
-	dst net.IP, interval, timeout time.Duration, opts ...unixx.WSockOpt) <-chan Reply {
+	dst net.IP, interval, timeout time.Duration, opts ...unixx.SockOpt) <-chan Reply {
 	ch := make(chan Reply)
 	go func() {
 		defer close(ch)
@@ -376,7 +376,7 @@ func (p *Pinger) PingChContextPayloadIntervalTimeout(ctx context.Context, payloa
 // PingChContextIntervalTimeout is like PingChContextPayloadIntervalTimeout,
 // but with no payload.
 func (p *Pinger) PingChContextIntervalTimeout(ctx context.Context, dst net.IP,
-	interval, timeout time.Duration, opts ...unixx.WSockOpt) <-chan Reply {
+	interval, timeout time.Duration, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextPayloadIntervalTimeout(ctx, dst, nil, interval, timeout, opts...)
 }
 
@@ -384,73 +384,73 @@ func (p *Pinger) PingChContextIntervalTimeout(ctx context.Context, dst net.IP,
 // but with timeout equal to the interval, so it waits for reply to each request
 // until interval has passed.
 func (p *Pinger) PingChContextPayloadInterval(ctx context.Context, dst net.IP,
-	payload []byte, interval time.Duration, opts ...unixx.WSockOpt) <-chan Reply {
+	payload []byte, interval time.Duration, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextPayloadIntervalTimeout(ctx, dst, payload, interval, interval, opts...)
 }
 
 // PingChContextInterval is like PingChContextPayloadInterval, but with no payload.
 func (p *Pinger) PingChContextInterval(ctx context.Context, dst net.IP,
-	interval time.Duration, opts ...unixx.WSockOpt) <-chan Reply {
+	interval time.Duration, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextIntervalTimeout(ctx, dst, interval, interval, opts...)
 }
 
 // PingChContextPayloadTimeout is the same as PingChContextPayloadIntervalTimeout,
 // but echo requests are sent one by one, without waiting for interval to pass.
 func (p *Pinger) PingChContextPayloadTimeout(ctx context.Context, dst net.IP,
-	payload []byte, timeout time.Duration, opts ...unixx.WSockOpt) <-chan Reply {
+	payload []byte, timeout time.Duration, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextPayloadIntervalTimeout(ctx, dst, payload, 0, timeout, opts...)
 }
 
 // PingChContextTimeout is like PingChContextPayloadTimeout, but with no payload.
 func (p *Pinger) PingChContextTimeout(ctx context.Context, dst net.IP,
-	timeout time.Duration, opts ...unixx.WSockOpt) <-chan Reply {
+	timeout time.Duration, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextPayloadTimeout(ctx, dst, nil, timeout, opts...)
 }
 
 // PingChContextPayload is the same as PingChContextPayloadTimeout,
 // but with no timeout, so it waits for each reply until context is done.
 func (p *Pinger) PingChContextPayload(ctx context.Context, dst net.IP,
-	payload []byte, opts ...unixx.WSockOpt) <-chan Reply {
+	payload []byte, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextPayloadTimeout(ctx, dst, payload, 0, opts...)
 }
 
 // PingChContext is like PingChContextPayload, but with no payload.
-func (p *Pinger) PingChContext(ctx context.Context, dst net.IP, opts ...unixx.WSockOpt) <-chan Reply {
+func (p *Pinger) PingChContext(ctx context.Context, dst net.IP, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextPayload(ctx, dst, nil, opts...)
 }
 
 // PingChPayloadTimeout is the same as PingChContextPayloadTimeout,
 // but with background context, so it pings forever.
 func (p *Pinger) PingChPayloadTimeout(dst net.IP, payload []byte,
-	timeout time.Duration, opts ...unixx.WSockOpt) <-chan Reply {
+	timeout time.Duration, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextPayloadTimeout(context.Background(), dst, payload, timeout, opts...)
 }
 
 // PingChTimeout is like PingChPayloadTimeout, but with no payload
-func (p *Pinger) PingChTimeout(dst net.IP, timeout time.Duration, opts ...unixx.WSockOpt) <-chan Reply {
+func (p *Pinger) PingChTimeout(dst net.IP, timeout time.Duration, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextPayloadTimeout(context.Background(), dst, nil, timeout, opts...)
 }
 
 // PingChPayloadInterval is the same as PingChContextPayloadInterval,
 // but with background timeout, so it pings forever.
 func (p *Pinger) PingChPayloadInterval(dst net.IP, payload []byte,
-	interval time.Duration, opts ...unixx.WSockOpt) <-chan Reply {
+	interval time.Duration, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextPayloadInterval(context.Background(), dst, payload, interval, opts...)
 }
 
 // PingChInterval is like PingChPayloadInterval, but with no payload.
-func (p *Pinger) PingChInterval(dst net.IP, interval time.Duration, opts ...unixx.WSockOpt) <-chan Reply {
+func (p *Pinger) PingChInterval(dst net.IP, interval time.Duration, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChPayloadInterval(dst, nil, interval, opts...)
 }
 
 // PingChPayload is the same as PingChContextPayload, but with background
 // context, so it pings forever.
-func (p *Pinger) PingChPayload(dst net.IP, payload []byte, opts ...unixx.WSockOpt) <-chan Reply {
+func (p *Pinger) PingChPayload(dst net.IP, payload []byte, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChContextPayload(context.Background(), payload, dst, opts...)
 }
 
 // PingCh is like PingChPayload, but with no payload.
-func (p *Pinger) PingCh(dst net.IP, opts ...unixx.WSockOpt) <-chan Reply {
+func (p *Pinger) PingCh(dst net.IP, opts ...unixx.SockOpt) <-chan Reply {
 	return p.PingChPayload(dst, nil, opts...)
 }
 
@@ -460,7 +460,7 @@ func (p *Pinger) PingCh(dst net.IP, opts ...unixx.WSockOpt) <-chan Reply {
 // until the first occurred connection error if there was any.
 // Zero timeout means wait for each reply until the context is done.
 func (p *Pinger) PingNContextPayloadIntervalTimeout(ctx context.Context, dst net.IP, n int,
-	payload []byte, interval, timeout time.Duration, opts ...unixx.WSockOpt) (Replies, error) {
+	payload []byte, interval, timeout time.Duration, opts ...unixx.SockOpt) (Replies, error) {
 	var ticker *time.Ticker
 	if interval > 0 {
 		checkIntervalTimeout(interval, timeout)
@@ -492,77 +492,77 @@ func (p *Pinger) PingNContextPayloadIntervalTimeout(ctx context.Context, dst net
 // timeout equal to the interval, so it waits for reply to each request until
 // interval has passed.
 func (p *Pinger) PingNContextPayloadInterval(ctx context.Context, dst net.IP, n int,
-	payload []byte, interval time.Duration, opts ...unixx.WSockOpt) (Replies, error) {
+	payload []byte, interval time.Duration, opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNContextPayloadIntervalTimeout(ctx, dst, n, payload, interval, interval, opts...)
 }
 
 // PingNContextInterval is like PingNContextPayloadInterval, but with no payload.
 func (p *Pinger) PingNContextInterval(ctx context.Context, dst net.IP, n int,
-	interval time.Duration, opts ...unixx.WSockOpt) (Replies, error) {
+	interval time.Duration, opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNContextPayloadInterval(ctx, dst, n, nil, interval, opts...)
 }
 
 // PingNContextPayloadTimeout is the same as PingNContextPayloadIntervalTimeout,
 // but echo requests are sent one by one, without waiting for interval to pass.
 func (p *Pinger) PingNContextPayloadTimeout(ctx context.Context, dst net.IP, n int,
-	payload []byte, timeout time.Duration, opts ...unixx.WSockOpt) (Replies, error) {
+	payload []byte, timeout time.Duration, opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNContextPayloadIntervalTimeout(ctx, dst, n, payload, 0, timeout, opts...)
 }
 
 // PingNContextTimeout is like PingNContextPayloadTimeout, but with no payload.
 func (p *Pinger) PingNContextTimeout(ctx context.Context, dst net.IP, n int,
-	timeout time.Duration, opts ...unixx.WSockOpt) (Replies, error) {
+	timeout time.Duration, opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNContextPayloadTimeout(ctx, dst, n, nil, timeout, opts...)
 }
 
 // PingNContextPayload is the same as PingNContextPayloadTimeout, but with no
 // timeout, so it waits for each reply until context is done.
 func (p *Pinger) PingNContextPayload(ctx context.Context, dst net.IP, n int,
-	payload []byte, opts ...unixx.WSockOpt) (Replies, error) {
+	payload []byte, opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNContextPayloadTimeout(ctx, dst, n, payload, 0, opts...)
 }
 
 // PingNContext is like PingNContextPayload, but with no payload.
 func (p *Pinger) PingNContext(ctx context.Context, dst net.IP, n int,
-	opts ...unixx.WSockOpt) (Replies, error) {
+	opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNContextTimeout(ctx, dst, n, 0, opts...)
 }
 
 // PingNPayloadTimeout is the same as PingNContextPayloadTimeout, but with background
 // context, so it tries to ping exactly n times.
 func (p *Pinger) PingNPayloadTimeout(dst net.IP, n int, payload []byte,
-	timeout time.Duration, opts ...unixx.WSockOpt) (Replies, error) {
+	timeout time.Duration, opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNContextPayloadTimeout(context.Background(), dst, n, payload, timeout, opts...)
 }
 
 // PingNTimeout is like PingNPayloadTimeout, but wuth no payload.
 func (p *Pinger) PingNTimeout(dst net.IP, n int, timeout time.Duration,
-	opts ...unixx.WSockOpt) (Replies, error) {
+	opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNContextPayloadTimeout(context.Background(), dst, n, nil, timeout, opts...)
 }
 
 // PingNPayloadInterval is the same as PingNPayloadTimeoutInterval, but with background
 // context, so it tries to ping exactly n times.
 func (p *Pinger) PingNPayloadInterval(dst net.IP, n int, payload []byte,
-	interval time.Duration, opts ...unixx.WSockOpt) (Replies, error) {
+	interval time.Duration, opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNContextPayloadInterval(context.Background(), dst, n, payload, interval, opts...)
 }
 
 // PingNInterval is like PingNPayloadInterval, but with no payload.
 func (p *Pinger) PingNInterval(dst net.IP, n int, interval time.Duration,
-	opts ...unixx.WSockOpt) (Replies, error) {
+	opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNPayloadInterval(dst, n, nil, interval, opts...)
 }
 
 // PingNPayload is the same as PingNContextPayload, but with background context,
 // so it tries to ping exactly n times.
 func (p *Pinger) PingNPayload(dst net.IP, n int, payload []byte,
-	opts ...unixx.WSockOpt) (Replies, error) {
+	opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNContextPayload(context.Background(), dst, n, payload, opts...)
 }
 
 // PingN is like PingNPayload, but with no payload
-func (p *Pinger) PingN(dst net.IP, n int, opts ...unixx.WSockOpt) (Replies, error) {
+func (p *Pinger) PingN(dst net.IP, n int, opts ...unixx.SockOpt) (Replies, error) {
 	return p.PingNPayload(dst, n, nil, opts...)
 }
 

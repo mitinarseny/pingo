@@ -18,7 +18,7 @@ import (
 
 // send sends ICMP message of given type and code with diven body to dst.
 // opts can be used to ste per-packet sendmsg(2) options.
-func (p *Pinger) send(typ icmp.Type, code uint8, body icmp.MessageBody, dst net.IP, onSent func(), opts ...unixx.WSockOpt) error {
+func (p *Pinger) send(typ icmp.Type, code uint8, body icmp.MessageBody, dst net.IP, onSent func(), opts ...unixx.SockOpt) error {
 	b, err := (&icmp.Message{
 		Type: typ,
 		Code: int(code),
@@ -194,11 +194,12 @@ func (p *Pinger) dispatch(from net.IP, buff, oob []byte) {
 				}
 			case unix.IP_TTL:
 				ttlOpt := TTL(0)
-				ttlOpt.Unmarshal(scm.Data)
+				unixx.UnmarshalOpt(scm.Data, ttlOpt)
+				ttlOpt.Ptr()
 				ttl = ttlOpt.Get()
 			case unix.IPV6_HOPLIMIT:
 				hlOpt := HopLimit(0)
-				hlOpt.Unmarshal(scm.Data)
+				unixx.UnmarshalOpt(scm.Data, hlOpt)
 				ttl = hlOpt.Get()
 			}
 		case unix.SOL_SOCKET:

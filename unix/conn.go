@@ -91,7 +91,7 @@ func (c *SocketConn) Disconnect() error {
 	return os.NewSyscallError("connect", operr)
 }
 
-func (c *SocketConn) SetSockOpts(opts ...WSockOpt) error {
+func (c *SocketConn) SetSockOpts(opts ...SockOpt) error {
 	var operr error
 	if err := c.Control(func(fd uintptr) {
 		operr = SetSockOpts(fd, opts...)
@@ -101,7 +101,7 @@ func (c *SocketConn) SetSockOpts(opts ...WSockOpt) error {
 	return operr
 }
 
-func (c *SocketConn) GetSockOpts(opts ...RSockOpt) error {
+func (c *SocketConn) GetSockOpts(opts ...SockOpt) error {
 	var operr error
 	if err := c.Control(func(fd uintptr) {
 		operr = GetSockOpts(fd, opts...)
@@ -112,41 +112,42 @@ func (c *SocketConn) GetSockOpts(opts ...RSockOpt) error {
 }
 
 func (c *SocketConn) Domain() (int, error) {
-	o := NewIntSockOpt(unix.SOL_SOCKET, unix.SO_DOMAIN)
+	o := NewIntegerSockOpt[int](unix.SOL_SOCKET, unix.SO_DOMAIN)
+	// o := NewIntSockOpt(unix.SOL_SOCKET, unix.SO_DOMAIN)
 	err := c.GetSockOpts(o)
 	return o.Get(), err
 }
 
 func (c *SocketConn) Type() (int, error) {
-	o := NewIntSockOpt(unix.SOL_SOCKET, unix.SO_TYPE)
+	o := NewIntegerSockOpt[int](unix.SOL_SOCKET, unix.SO_TYPE)
 	err := c.GetSockOpts(o)
 	return o.Get(), err
 }
 
 func (c *SocketConn) Proto() (int, error) {
-	o := NewIntSockOpt(unix.SOL_SOCKET, unix.SO_PROTOCOL)
+	o := NewIntegerSockOpt[int](unix.SOL_SOCKET, unix.SO_PROTOCOL)
 	err := c.GetSockOpts(o)
 	return o.Get(), err
 }
 
 func (c *SocketConn) BindToDevice(dev string) error {
 	return c.SetSockOpts(
-		NewStringSockOpt(unix.SOL_SOCKET, unix.SO_BINDTODEVICE).Set(dev))
+		NewBytesSockOpt[string](unix.SOL_SOCKET, unix.SO_BINDTODEVICE).Set(dev))
 }
 
 func (c *SocketConn) BoundToDevice() (string, error) {
-	o := NewStringSockOpt(unix.SOL_SOCKET, unix.SO_BINDTODEVICE).SetSize(unix.IFNAMSIZ)
+	o := NewBytesSockOpt[string](unix.SOL_SOCKET, unix.SO_BINDTODEVICE).SetSize(unix.IFNAMSIZ)
 	err := c.GetSockOpts(o)
 	return o.Get(), err
 }
 
 func (c *SocketConn) BindToIfIndex(ifIndex int) error {
 	return c.SetSockOpts(
-		NewIntSockOpt(unix.SOL_SOCKET, unix.SO_BINDTODEVICE).Set(ifIndex))
+		NewIntegerSockOpt[int](unix.SOL_SOCKET, unix.SO_BINDTODEVICE).Set(ifIndex))
 }
 
 func (c *SocketConn) BoundToIfIndex() (int, error) {
-	o := NewIntSockOpt(unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX)
+	o := NewIntegerSockOpt[int](unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX)
 	err := c.GetSockOpts(o)
 	return o.Get(), err
 }
@@ -161,7 +162,7 @@ func (c *SocketConn) AttachFilter(instrs []bpf.Instruction) error {
 
 func (c *SocketConn) AttachFilterRaw(f []bpf.RawInstruction) error {
 	return c.SetSockOpts(
-		NewSockOpt(unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, unix.SizeofSockFprog,
+		NewPointerSockOpt(unix.SOL_SOCKET, unix.SO_ATTACH_FILTER).Set(unix.SizeofSockFprog,
 			unsafe.Pointer(&unix.SockFprog{
 				Len:    uint16(len(f)),
 				Filter: (*unix.SockFilter)(unsafe.Pointer(&f[0])),
@@ -282,7 +283,7 @@ func (c *SocketConn) SendTo(buf []byte, flags int, to unix.Sockaddr) error {
 	return os.NewSyscallError("sendto", operr)
 }
 
-func (c *SocketConn) SendMsg(buf []byte, to unix.Sockaddr, flags int, opts ...WSockOpt) (n int, err error) {
+func (c *SocketConn) SendMsg(buf []byte, to unix.Sockaddr, flags int, opts ...SockOpt) (n int, err error) {
 	oob := MarshalCmsg(opts...)
 	var operr error
 	if err := c.rc.Write(func(fd uintptr) (done bool) {
