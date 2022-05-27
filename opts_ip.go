@@ -16,18 +16,18 @@ func MTU6(mtu int32) *unixx.ValueSockOpt[int32] {
 }
 
 // TTL is <SOL_IP, IP_TTL>
-func TTL(ttl uint8) *unixx.ValueSockOpt[uint32] {
-	return unixx.NewSockOpt[uint32](unix.SOL_IP, unix.IP_TTL).Set(uint32(ttl))
+func TTL(ttl uint8) unixx.IValueSockOpt[uint8, uint32] {
+	return unixx.NewIValueSockOpt[uint8, uint32](unix.SOL_IP, unix.IP_TTL).Set(ttl)
 }
 
 // TTL is <SOL_IPV6, IPV6_HOPLIMIT>
-func HopLimit(hl uint8) *unixx.ValueSockOpt[uint32] {
-	return unixx.NewSockOpt[uint32](unix.SOL_IPV6, unix.IPV6_HOPLIMIT).Set(uint32(hl))
+func HopLimit(hl uint8) unixx.IValueSockOpt[uint8, uint32] {
+	return unixx.NewIValueSockOpt[uint8, uint32](unix.SOL_IPV6, unix.IPV6_HOPLIMIT).Set(hl)
 }
 
 // TrafficClass is <SOL_IPV6, IPV6_TCLASS>
-func TrafficClass(tc uint8) *unixx.ValueSockOpt[uint32] {
-	return unixx.NewSockOpt[uint32](unix.SOL_IPV6, unix.IPV6_TCLASS).Set(uint32(tc))
+func TrafficClass(tc uint8) unixx.IValueSockOpt[uint8, uint32] {
+	return unixx.NewIValueSockOpt[uint8, uint32](unix.SOL_IPV6, unix.IPV6_TCLASS).Set(tc)
 }
 
 // recvErr is <SOL_IP, IP_RECVERR>

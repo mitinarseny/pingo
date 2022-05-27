@@ -4,6 +4,7 @@ import (
 	"os"
 	"unsafe"
 
+	"golang.org/x/exp/constraints"
 	"golang.org/x/sys/unix"
 )
 
@@ -85,8 +86,8 @@ func (o *sockopt) Type() int32 {
 }
 
 type ValueSockOpt[T any] struct {
-	sockopt
 	value T
+	sockopt
 }
 
 var _ SockOpt = &ValueSockOpt[int]{}
@@ -124,6 +125,27 @@ func (o *ValueSockOpt[T]) Set(v T) *ValueSockOpt[T] {
 	return o
 }
 
+type IValueSockOpt[T, U constraints.Integer] struct {
+	*ValueSockOpt[U]
+}
+
+func NewIValueSockOpt[T, U constraints.Integer](lvl, typ int32) IValueSockOpt[T, U] {
+	return IValueSockOpt[T, U]{
+		ValueSockOpt: NewSockOpt[U](lvl, typ),
+	}
+}
+
+var _ SockOpt = &IValueSockOpt[uint8, uint32]{}
+
+func (o IValueSockOpt[T, U]) Get() T {
+	return T(o.ValueSockOpt.Get())
+}
+
+func (o IValueSockOpt[T, U]) Set(v T) IValueSockOpt[T, U] {
+	o.ValueSockOpt.Set(U(v))
+	return o
+}
+
 type BoolSockOpt struct {
 	*ValueSockOpt[int32]
 }
@@ -150,8 +172,8 @@ type bytes interface {
 }
 
 type BytesSockOpt[T bytes] struct {
-	sockopt
 	value T
+	sockopt
 }
 
 var _ SockOpt = &BytesSockOpt[[]byte]{}
