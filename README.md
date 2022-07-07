@@ -17,7 +17,7 @@ Fast and lightweight ping library for Golang with multi-host support.
 
 ## Requirements
 
-* go >= 1.16
+* go >= 1.18
 * Linux kernel >= 3.11
 
 You may need to adjust
